@@ -1,133 +1,125 @@
-# NVDAAL - NVIDIA Ada Lovelace Driver for macOS Hackintosh
+# NVDAAL - NVIDIA Ada Lovelace Compute Driver for macOS
 
-Driver open source para GPUs NVIDIA RTX 40 series (Ada Lovelace) no macOS Hackintosh.
+Driver open source para **compute/AI/ML** em GPUs NVIDIA RTX 40 series (Ada Lovelace) no macOS.
 
 ## Status
 
-🚧 **EM DESENVOLVIMENTO** - Este projeto está em estágio inicial.
+**EM DESENVOLVIMENTO** - Estágio inicial focado em inicialização GSP.
 
 ## Objetivo
 
-Criar um driver funcional para a RTX 4090 (e outras GPUs Ada Lovelace) no macOS Tahoe (26), permitindo:
+Driver de **compute-only** para RTX 4090 no macOS, permitindo:
 
-- [ ] Detecção e inicialização da GPU
-- [ ] Framebuffer básico (saída de vídeo)
-- [ ] Aceleração 2D
-- [ ] Suporte básico ao Metal
-- [ ] Power management
+- [x] Detecção e inicialização da GPU
+- [ ] Inicialização do GSP (GPU System Processor)
+- [ ] Alocação de memória GPU (VRAM)
+- [ ] Compute queues para AI/ML workloads
+- [ ] Interface para frameworks de ML (tinygrad, PyTorch, etc)
+
+**Nota**: Este driver **NÃO** suporta display/vídeo. Focamos 100% em compute.
+
+## Por que Compute-Only?
+
+1. **Simplicidade**: Sem framebuffer, display engine, HDMI/DP = código muito menor
+2. **Foco**: RTX 4090 é uma fera para AI/ML, aproveitamos isso
+3. **Viabilidade**: TinyGPU provou que compute funciona no macOS
+4. **Performance**: Toda a potência vai para compute, não para display
 
 ## Hardware Suportado
 
-| GPU | Device ID | Status |
-|-----|-----------|--------|
-| RTX 4090 | 0x2684 | 🔴 Em desenvolvimento |
-| RTX 4090 D | 0x2685 | 🔴 Planejado |
-| RTX 4080 Super | 0x2702 | 🔴 Planejado |
-| RTX 4080 | 0x2704 | 🔴 Planejado |
-| RTX 4070 Ti Super | 0x2705 | 🔴 Planejado |
+| GPU | Device ID | Tensor Cores | Status |
+|-----|-----------|--------------|--------|
+| RTX 4090 | 0x2684 | 512 | Em desenvolvimento |
+| RTX 4090 D | 0x2685 | 512 | Planejado |
+| RTX 4080 Super | 0x2702 | 320 | Planejado |
+| RTX 4080 | 0x2704 | 304 | Planejado |
+| RTX 4070 Ti Super | 0x2705 | 264 | Planejado |
+
+## Arquitetura
+
+```
++------------------------------------------+
+|          Aplicações AI/ML                |
+|  (tinygrad, PyTorch, TensorFlow, etc)    |
++------------------+-----------------------+
+                   |
++------------------v-----------------------+
+|         NVDAAL User Library              |
+|   - Alocação de buffers                  |
+|   - Submissão de compute kernels         |
+|   - Sincronização CPU-GPU                |
++------------------+-----------------------+
+                   |
++------------------v-----------------------+
+|           NVDAAL.kext (IOKit)            |
+|   - GSP initialization                   |
+|   - Memory management (VRAM)             |
+|   - Compute queue management             |
+|   - RPC communication with GSP           |
++------------------+-----------------------+
+                   |
++------------------v-----------------------+
+|      RTX 4090 (Ada Lovelace AD102)       |
+|   - 16384 CUDA cores                     |
+|   - 512 Tensor cores (4th gen)           |
+|   - 24GB GDDR6X                          |
+|   - GSP (RISC-V processor)               |
++------------------------------------------+
+```
 
 ## Requisitos
 
 ### Hardware
-- PC com suporte a Hackintosh (Intel ou AMD)
+- Hackintosh (Intel ou AMD)
 - GPU NVIDIA RTX 40 series
-- macOS Tahoe 26 (via OpenCore)
+- macOS Tahoe 26+ (via OpenCore)
 
 ### Software
 - Xcode Command Line Tools
 - OpenCore 1.0.7+
-- Máquina Linux (para extração de VBIOS)
-- Python 3.6+
 
-## Instalação
-
-### 1. Extrair VBIOS (no Linux)
+## Compilação
 
 ```bash
-cd Tools/
-sudo python3 extract_vbios.py -o vbios_4090.rom
-```
-
-### 2. Compilar o kext (no macOS)
-
-```bash
-make
+make clean && make
 make test  # Valida estrutura
 ```
 
-### 3. Instalar
+## Instalação
 
 ```bash
+# Temporário (para testes)
+make load
+
+# Permanente
 make install
+# Reboot necessário
 ```
 
-### 4. Configurar OpenCore
+## Logs
 
-Adicione ao `config.plist`:
-
-```xml
-<key>Kernel</key>
-<dict>
-    <key>Add</key>
-    <array>
-        <dict>
-            <key>BundlePath</key>
-            <string>NVDAAL.kext</string>
-            <key>Enabled</key>
-            <true/>
-            <key>ExecutablePath</key>
-            <string>Contents/MacOS/NVDAAL</string>
-            <key>PlistPath</key>
-            <string>Contents/Info.plist</string>
-        </dict>
-    </array>
-</dict>
+```bash
+log show --predicate 'eventMessage contains "NVDAAL"' --last 5m
 ```
 
-## Estrutura do Projeto
+## Baseado em
 
-```
-NVDAAL-Driver/
-├── README.md
-├── LICENSE
-├── Makefile
-├── Info.plist
-├── Sources/
-│   └── NVDAAL.c          # Driver principal
-├── Firmware/
-│   └── README.md         # Instruções para VBIOS
-├── Tools/
-│   └── extract_vbios.py  # Extrator de VBIOS
-├── Docs/
-│   ├── ARCHITECTURE.md
-│   ├── DEBUGGING.md
-│   └── TODO.md
-└── Build/                # Kext gerado aqui
-```
-
-## Recursos Utilizados
-
+- [TinyGPU/tinygrad](https://github.com/tinygrad/tinygrad) - Referência principal para GSP
 - [NVIDIA open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules)
 - [Nouveau Project](https://nouveau.freedesktop.org/)
-- [envytools](https://github.com/envytools/envytools)
-- [TechPowerUp VBIOS Collection](https://www.techpowerup.com/vgabios/)
 
-## Comunidade
+## Roadmap
 
-- [InsanelyMac](https://www.insanelymac.com/)
-- [r/hackintosh](https://www.reddit.com/r/hackintosh/)
-- [OpenCore Docs](https://dortania.github.io/)
-
-## Aviso Legal
-
-Este projeto é para fins educacionais e de pesquisa. Não há garantia de funcionamento.
-O uso de firmware proprietário pode violar termos de licença da NVIDIA.
-Use por sua conta e risco.
+1. **Fase 1**: GSP Initialization (atual)
+2. **Fase 2**: Memory Management
+3. **Fase 3**: Compute Queues
+4. **Fase 4**: User-space Library
+5. **Fase 5**: Framework Integration
 
 ## Licença
 
 MIT License - Veja [LICENSE](LICENSE)
 
-## Contribuindo
+## Aviso
 
-Pull requests são bem-vindos! Por favor, leia [CONTRIBUTING.md](Docs/CONTRIBUTING.md) primeiro.
+Projeto educacional/pesquisa. Use por sua conta e risco.

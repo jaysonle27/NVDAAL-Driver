@@ -1,64 +1,102 @@
-# TODO - NVDAAL Driver
+# TODO - NVDAAL Compute Driver
 
-## Fase 1: Preparação (Atual)
+## Fase 1: Estrutura Base (COMPLETO)
 
 - [x] Criar estrutura do projeto
 - [x] Implementar kext básico com detecção PCI
-- [x] Criar script de extração de VBIOS
-- [x] Documentar arquitetura
-- [ ] Extrair e analisar VBIOS da RTX 4090
-- [ ] Estudar registros via envytools
-- [ ] Analisar nvidia open-gpu-kernel-modules
+- [x] Mapear BARs (MMIO + VRAM)
+- [x] Ler registros de identificação (BOOT0, BOOT42)
+- [x] Documentar arquitetura compute-only
+- [x] Criar headers de registros (NVDAALRegs.h)
+- [x] Criar estrutura GSP (NVDAALGsp.h/cpp)
 
-## Fase 2: Inicialização Básica
+## Fase 2: GSP Initialization (ATUAL)
 
-- [ ] Carregar VBIOS via kext
-- [ ] Implementar leitura de registros BOOT0/PMC
-- [ ] Configurar interrupções MSI-X
-- [ ] Mapear VRAM (BAR1)
-- [ ] Inicializar PMU básico
+- [ ] Baixar firmware GSP (gsp-570.144.bin)
+- [ ] Implementar parser ELF para firmware
+- [ ] Implementar alocação DMA (IOBufferMemoryDescriptor)
+- [ ] Construir radix3 page table
+- [ ] Configurar WPR metadata
+- [ ] Implementar boot sequence:
+  - [ ] Reset FALCON
+  - [ ] Executar FWSEC (do VBIOS)
+  - [ ] Iniciar RISC-V core
+  - [ ] Aguardar GSP_INIT_DONE
+- [ ] Implementar RPC básico:
+  - [ ] Enqueue command
+  - [ ] Dequeue status
+  - [ ] sendRpc()
+  - [ ] waitRpcResponse()
 
-## Fase 3: Display Output
+## Fase 3: Memory Management
 
-- [ ] Detectar conectores (DP/HDMI)
-- [ ] Ler EDID do monitor
-- [ ] Configurar timing de vídeo
-- [ ] Implementar framebuffer linear
-- [ ] Teste: exibir imagem estática
+- [ ] Implementar alocador de VRAM
+- [ ] Suporte a buffers DMA
+- [ ] Page table management
+- [ ] Memory mapping para user-space
+- [ ] Fence/sync objects
 
-## Fase 4: 2D Acceleration
+## Fase 4: Compute Queues
 
-- [ ] Implementar blitting
-- [ ] Suporte a cópia de superfície
-- [ ] Aceleração de cursor
-- [ ] Teste: desktop com cursor acelerado
+- [ ] Criar channel GPFIFO
+- [ ] Implementar ring buffer
+- [ ] Push buffer management
+- [ ] Compute class instantiation (ADA_COMPUTE_A)
+- [ ] Command submission
+- [ ] Sync primitives
 
-## Fase 5: Metal Básico
+## Fase 5: User-Space Library
 
-- [ ] Criar MTLDevice wrapper
-- [ ] Implementar MTLCommandBuffer
-- [ ] Suporte a texturas simples
-- [ ] Pipeline de renderização básico
-- [ ] Teste: triângulo em Metal
+- [ ] IOUserClient para comunicação kernel<->user
+- [ ] libNVDAAL.dylib
+- [ ] API para:
+  - [ ] Alocação de buffers
+  - [ ] Upload/download de dados
+  - [ ] Submissão de kernels
+  - [ ] Sincronização
 
-## Fase 6: Estabilidade
+## Fase 6: Framework Integration
 
-- [ ] Tratamento de erros robusto
-- [ ] Power management (sleep/wake)
-- [ ] Hot plug de display
-- [ ] Debugging avançado
-- [ ] Documentação completa
+- [ ] Integração com tinygrad
+- [ ] Backend PyTorch (optional)
+- [ ] Documentação de API
+- [ ] Exemplos de uso
 
-## Bloqueadores Conhecidos
+## Notas de Implementação
 
-1. **GSP Firmware**: Necessário para inicialização completa
-2. **Shader Compiler**: Não existe compilador SASS open source
-3. **NVLink**: Não suportado inicialmente
-4. **Ray Tracing**: Fora do escopo inicial
+### Prioridades
+1. GSP é **obrigatório** - sem ele nada funciona em Ada Lovelace
+2. Foco em compute queues, não display
+3. Simplicidade > features
 
-## Recursos Necessários
+### Recursos Úteis
+- TinyGPU: `tinygrad/runtime/support/nv/ip.py`
+- NVIDIA open-gpu-kernel-modules
+- Nouveau project
 
-- [ ] Máquina Linux com RTX 4090 para extração
-- [ ] Analisador lógico para debug de timing
-- [ ] Acesso a envytools modificado para Ada
-- [ ] Tempo de engenharia reversa
+### Diferenças macOS
+- IOBufferMemoryDescriptor em vez de dma_alloc_coherent
+- IOUserClient em vez de /dev/nvidia*
+- Sem mmap direto - usar IOMemoryMap
+
+## Comandos Úteis
+
+```bash
+# Compilar
+make clean && make
+
+# Testar estrutura
+make test
+
+# Carregar temporariamente
+make load
+
+# Ver logs
+make logs
+
+# Ver logs em tempo real
+make logs-live
+
+# Baixar firmware
+make download-firmware
+```
