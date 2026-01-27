@@ -38,6 +38,7 @@ lib: $(BUILD_DIR)/libNVDAAL.dylib
 $(BUILD_DIR)/libNVDAAL.dylib: Library/libNVDAAL.cpp Library/nvdaal_c_api.cpp Library/libNVDAAL.h
 	@mkdir -p $(BUILD_DIR)
 	clang++ -dynamiclib -std=c++17 -framework IOKit -framework CoreFoundation -I./Library \
+		-install_name @rpath/libNVDAAL.dylib \
 		Library/libNVDAAL.cpp Library/nvdaal_c_api.cpp -o $@
 	@echo "[*] Shared Library: $@"
 

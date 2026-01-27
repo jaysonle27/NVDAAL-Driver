@@ -56,9 +56,16 @@ IOReturn NVDAALUserClient::externalMethod(uint32_t selector, IOExternalMethodArg
             return methodAllocVram(arguments);
         case kNVDAALMethodSubmitCommand:
             return methodSubmitCommand(arguments);
+        case kNVDAALMethodWaitSemaphore:
+            return methodWaitSemaphore(arguments);
         default:
             return kIOReturnBadArgument;
     }
+}
+
+IOReturn NVDAALUserClient::methodWaitSemaphore(IOExternalMethodArguments *args) {
+    if (args->scalarInputCount != 2) return kIOReturnBadArgument;
+    return provider->waitSemaphore(args->scalarInput[0], (uint32_t)args->scalarInput[1], 1000) ? kIOReturnSuccess : kIOReturnTimeout;
 }
 
 IOReturn NVDAALUserClient::methodAllocVram(IOExternalMethodArguments *args) {

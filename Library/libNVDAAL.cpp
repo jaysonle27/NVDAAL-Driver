@@ -13,6 +13,7 @@
 #define METHOD_LOAD_FIRMWARE 0
 #define METHOD_ALLOC_VRAM 1
 #define METHOD_SUBMIT_CMD 2
+#define METHOD_WAIT_SYNC 3
 
 namespace nvdaal {
 
@@ -115,6 +116,21 @@ bool Client::submitCommand(uint32_t cmd) {
         (io_connect_t)connection,
         METHOD_SUBMIT_CMD,
         input, 1,
+        NULL, NULL
+    );
+
+    return (kr == KERN_SUCCESS);
+}
+
+bool Client::waitSemaphore(uint64_t gpuAddr, uint32_t value) {
+    if (!connect()) return false;
+
+    uint64_t input[2] = { gpuAddr, (uint64_t)value };
+
+    kern_return_t kr = IOConnectCallScalarMethod(
+        (io_connect_t)connection,
+        METHOD_WAIT_SYNC,
+        input, 2,
         NULL, NULL
     );
 

@@ -31,10 +31,8 @@ public:
 
     // Memory Management
     uint64_t allocVram(size_t size);
-    // TODO: freeVram (needs driver support)
-
-    // Compute
     bool submitCommand(uint32_t cmd);
+    bool waitSemaphore(uint64_t gpuAddr, uint32_t value);
     
     // Future: Command Buffer abstraction
     // struct CommandBuffer { ... };

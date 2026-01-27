@@ -33,6 +33,7 @@ public:
     IOReturn methodLoadFirmware(IOExternalMethodArguments *args);
     IOReturn methodAllocVram(IOExternalMethodArguments *args);
     IOReturn methodSubmitCommand(IOExternalMethodArguments *args);
+    IOReturn methodWaitSemaphore(IOExternalMethodArguments *args);
 };
 
 // Method Selectors
@@ -40,6 +41,7 @@ enum {
     kNVDAALMethodLoadFirmware = 0,
     kNVDAALMethodAllocVram,
     kNVDAALMethodSubmitCommand,
+    kNVDAALMethodWaitSemaphore,
     kNVDAALMethodCount
 };
 

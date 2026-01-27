@@ -593,13 +593,74 @@ bool NVDAALGsp::sendRpc(uint32_t function, const void *params, size_t paramsSize
     return ok;
 }
 
+void NVDAALGsp::updateQueuePointers(void) {
+    // Sync local pointers with hardware
+    cmdQueueHead = readReg(NV_PGSP_QUEUE_HEAD(GSP_CMDQ_IDX));
+    statQueueHead = readReg(NV_PGSP_QUEUE_HEAD(GSP_MSGQ_IDX));
+}
+
+bool NVDAALGsp::dequeueStatus(void *msg, size_t maxSize, size_t *actualSize) {
+    if (!statQueue) return false;
+
+    // Update hardware head
+    statQueueHead = readReg(NV_PGSP_QUEUE_HEAD(GSP_MSGQ_IDX));
+    
+    if (statQueueHead == statQueueTail) return false;
+
+    GspQueueElement *elem = (GspQueueElement *)(statQueue + statQueueTail);
+    
+    // Verify checksum
+    // size_t payloadSize = ... (Need to know actual msg size)
+    // For now, use the elemCount to determine total size
+    size_t totalSize = elem->elemCount * 0x1000;
+    size_t payloadSize = totalSize - sizeof(GspQueueElement);
+
+    if (payloadSize > maxSize) {
+        payloadSize = maxSize;
+    }
+
+    memcpy(msg, elem->data, payloadSize);
+    if (actualSize) *actualSize = payloadSize;
+
+    // Increment tail by aligned size
+    statQueueTail = (statQueueTail + totalSize) % QUEUE_SIZE;
+    
+    // Tell GSP we consumed the message
+    writeReg(NV_PGSP_QUEUE_TAIL(GSP_MSGQ_IDX), statQueueTail);
+
+    return true;
+}
+
 bool NVDAALGsp::waitRpcResponse(uint32_t function, void *response, size_t responseSize, uint32_t timeoutMs) {
-    // TODO: Implement proper status queue polling
-    // For now, we assume the GSP processes commands quickly and rely on the status queue check in the main loop if needed
-    // In a real implementation, we would wait for a specific completion entry in the Status Queue.
-    // Since we are currently just firing and forgetting for initialization in this prototype phase:
-    // IOLog("NVDAAL-GSP: waitRpcResponse not fully implemented\n");
-    return true; 
+    uint32_t elapsed = 0;
+    uint8_t rpcBuf[4096];
+    size_t actualSize = 0;
+
+    while (elapsed < timeoutMs) {
+        if (dequeueStatus(rpcBuf, sizeof(rpcBuf), &actualSize)) {
+            NvRpcMessageHeader *hdr = (NvRpcMessageHeader *)rpcBuf;
+            
+            if (hdr->signature == NV_VGPU_MSG_SIGNATURE_VALID && hdr->function == function) {
+                if (response && responseSize > 0) {
+                    size_t copySize = (hdr->length - sizeof(NvRpcMessageHeader));
+                    if (copySize > responseSize) copySize = responseSize;
+                    memcpy(response, rpcBuf + sizeof(NvRpcMessageHeader), copySize);
+                }
+                return true;
+            }
+            
+            // If it's another event (like INIT_DONE), handle it?
+            if (hdr->function == NV_VGPU_MSG_EVENT_GSP_INIT_DONE) {
+                IOLog("NVDAAL-GSP: Async GSP_INIT_DONE received\n");
+                gspReady = true;
+            }
+        }
+
+        IODelay(100); // 100us
+        elapsed++;
+    }
+
+    return false;
 }
 
 // ============================================================================

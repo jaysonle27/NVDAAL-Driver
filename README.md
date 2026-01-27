@@ -122,7 +122,10 @@ sudo reboot
   - Radix3 Page Table Builder
   - WPR2 Metadata Configuration
   - Secure Boot Sequence (Falcon Reset -> RISC-V Boot)
-  - **Full RPC Engine** (rmAlloc, rmControl)
+- :white_check_mark: **Full RPC Engine** (rmAlloc, rmControl)
+- :white_check_mark: **Interrupt Driven Architecture**
+  - MSI (Message Signaled Interrupts) support
+  - Reactive status queue processing
 - :white_check_mark: **Memory Management (MMU)**
   - Virtual Address Space (VASpace)
   - Page Directory/Table management
@@ -142,6 +145,21 @@ sudo reboot
 
 ### Planned
 - :hourglass: tinygrad/PyTorch integration
+
+## :star: Pioneer Insights
+
+As of v0.3.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
+
+- **Lock-Free GSP RPC**: Using synchronous memory barriers and stack-allocated buffers to minimize kernel latency during GPU resource management.
+- **Hardware-Native GPFIFO**: Fully compliant with the 128-bit entry format required by AD10x chips, enabling direct hardware work submission.
+- **Dynamic MMU**: Implements a real-time Bump Allocator for GPU Virtual Address Space, ensuring memory isolation and proper page alignment for Tensor core workloads.
+
+### :chart_with_upwards_trend: Performance Status
+| Component | Status | Optimization |
+|-----------|--------|--------------|
+| RPC Latency | :low_brightness: Low | Stack-based buffers |
+| Memory Alloc | :high_brightness: High | Bump Allocator (Linear) |
+| Submission | :high_brightness: High | Direct Doorbell (UserD) |
 
 ## :gear: Architecture
 

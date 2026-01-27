@@ -7,6 +7,7 @@
 
 #include <IOKit/IOService.h>
 #include <IOKit/pci/IOPCIDevice.h>
+#include <IOKit/IOInterruptEventSource.h>
 #include "NVDAALGsp.h"
 #include "NVDAALMemory.h"
 #include "NVDAALChannel.h"
@@ -17,7 +18,6 @@ class NVDAAL : public IOService {
     OSDeclareDefaultStructors(NVDAAL);
 
 private:
-    // ... (existing members)
     IOPCIDevice *pciDevice;
 
     // Memory maps
@@ -48,6 +48,11 @@ private:
     NVDAALVASpace *vaSpace;
     NVDAALChannel *channel;
     NVDAALDisplay *display;
+
+    // Interrupts
+    IOInterruptEventSource *interruptSource;
+    static void handleInterrupt(OSObject *target, IOInterruptEventSource *source, int count);
+    void processInterrupt();
 
     // State
     bool computeReady;
@@ -81,6 +86,7 @@ public:
     bool loadGspFirmware(const void *data, size_t size);
     uint64_t allocVram(size_t size);
     bool submitCommand(uint32_t cmd);
+    bool waitSemaphore(uint64_t gpuAddr, uint32_t value, uint32_t timeoutMs);
 
     // IOKit Register Access Overrides (Internal)
     virtual bool setProperty(const OSSymbol *aKey, OSObject *anObject) override;
