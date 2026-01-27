@@ -19,6 +19,7 @@ SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)
 CXX = xcrun -sdk macosx clang++
 CXXFLAGS = -x c++ -std=c++17 -arch arm64 -fno-builtin -fno-exceptions -fno-rtti -mkernel \
 	-DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
+	-Wno-deprecated-declarations -Wno-inconsistent-missing-override -Wno-shadow \
 	-I$(SDKROOT)/System/Library/Frameworks/Kernel.framework/Headers \
 	-I$(SDKROOT)/System/Library/Frameworks/IOKit.framework/Headers \
 	-I./Sources

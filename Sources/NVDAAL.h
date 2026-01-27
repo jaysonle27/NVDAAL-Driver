@@ -81,6 +81,9 @@ public:
     bool loadGspFirmware(const void *data, size_t size);
     uint64_t allocVram(size_t size);
     bool submitCommand(uint32_t cmd);
+
+    // IOKit Register Access Overrides (Internal)
+    virtual bool setProperty(const OSSymbol *aKey, OSObject *anObject) override;
 };
 
 #endif // NVDAAL_H

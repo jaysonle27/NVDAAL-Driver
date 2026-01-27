@@ -525,7 +525,7 @@ bool NVDAALGsp::enqueueCommand(const void *msg, size_t size) {
 
     // Calculate total element size (header + payload)
     size_t elemSize = sizeof(GspQueueElement) + size;
-    size_t alignedSize = (elemSize + 0xFF) & ~0xFF;  // 256-byte aligned
+    size_t alignedSize = (elemSize + 0xFFULL) & ~0xFFULL;  // 256-byte aligned
 
     // Check for queue space
     uint32_t head = cmdQueueHead;

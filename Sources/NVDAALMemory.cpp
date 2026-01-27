@@ -50,7 +50,7 @@ uint64_t NVDAALMemory::allocVram(size_t size) {
     IOLockLock(lock);
     
     // Simple 4KB alignment
-    size_t alignedSize = (size + 4095) & ~4095;
+    size_t alignedSize = (size + 4095ULL) & ~4095ULL;
     
     if (freeOffset + alignedSize > vramSize) {
         IOLockUnlock(lock);

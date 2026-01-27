@@ -21,12 +21,12 @@ bool NVDAALUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 
     return true;
 }
 
-bool NVDAALUserClient::start(IOService *provider) {
-    if (!super::start(provider)) {
+bool NVDAALUserClient::start(IOService *service) {
+    if (!super::start(service)) {
         return false;
     }
     
-    this->provider = OSDynamicCast(NVDAAL, provider);
+    this->provider = OSDynamicCast(NVDAAL, service);
     if (!this->provider) {
         return false;
     }
@@ -34,8 +34,8 @@ bool NVDAALUserClient::start(IOService *provider) {
     return true;
 }
 
-void NVDAALUserClient::stop(IOService *provider) {
-    super::stop(provider);
+void NVDAALUserClient::stop(IOService *service) {
+    super::stop(service);
     this->provider = nullptr;
 }
 

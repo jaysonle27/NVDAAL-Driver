@@ -310,12 +310,14 @@ typedef struct {
 //
 // NVIDIA Class IDs (Architecture Specific)
 //
+#ifndef NV01_ROOT
 #define NV01_ROOT                       0x00000000
-// #define NV01_ROOT_CLIENT                0x00000000 // Host Client (Already defined below or handle appropriately)
-// NV01_ROOT_CLIENT is defined as 0x00000041 in older headers, but 0x00 for RM handle usage in some contexts.
-// We will use the specific value for RM alloc:
-#undef NV01_ROOT_CLIENT
-#define NV01_ROOT_CLIENT                0x00000000 
+#endif
+
+#ifndef NV01_ROOT_CLIENT
+#define NV01_ROOT_CLIENT                0x00000041
+#endif
+
 #define NV01_EVENT_OS_EVENT             0x00000079
 
 #define AD102_COMPUTE_A                 0x0000C9C0 // Ada Compute
