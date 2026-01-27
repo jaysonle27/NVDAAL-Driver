@@ -1,85 +1,87 @@
-# Arquitetura NVDAAL - Compute Driver
+# NVDAAL Architecture - Compute Driver
 
-## Visão Geral
+## Overview
 
-Driver compute-only para RTX 4090. **Sem suporte a display**.
+Compute-only driver for RTX 4090. **No display support**.
 
-```
-+------------------------------------------------------------------+
-|                     User Space                                    |
-|  +---------------------------+  +-----------------------------+   |
-|  |    tinygrad / PyTorch     |  |   NVDAAL User Library       |   |
-|  |    (ML frameworks)        |  |   (libNVDAAL.dylib)         |   |
-|  +-------------+-------------+  +-------------+---------------+   |
-|                |                              |                   |
-|                +---------------+--------------+                   |
-|                                |                                  |
-|                    +-----------v-----------+                      |
-|                    |    IOKit User Client  |                      |
-|                    +----------+------------+                      |
-+-------------------------------|-----------------------------------+
-                                |
-+-------------------------------v-----------------------------------+
-|                     Kernel Space                                  |
-|                                                                   |
-|  +-------------------------------------------------------------+  |
-|  |                    NVDAAL.kext                              |  |
-|  |                                                             |  |
-|  |  +------------------+  +------------------+  +------------+ |  |
-|  |  |  NVDAALDevice    |  |  NVDAALMemory    |  | NVDAALQueue| |  |
-|  |  |  - PCI init      |  |  - VRAM alloc    |  | - Commands | |  |
-|  |  |  - MMIO map      |  |  - DMA buffers   |  | - Submit   | |  |
-|  |  |  - GSP init      |  |  - Page tables   |  | - Sync     | |  |
-|  |  +--------+---------+  +--------+---------+  +------+-----+ |  |
-|  |           |                     |                   |       |  |
-|  |           +----------+----------+-------------------+       |  |
-|  |                      |                                      |  |
-|  |           +----------v----------+                           |  |
-|  |           |    NVDAALGsp        |                           |  |
-|  |           |  - RPC messages     |                           |  |
-|  |           |  - Firmware load    |                           |  |
-|  |           |  - Event handling   |                           |  |
-|  |           +----------+----------+                           |  |
-|  +----------------------|--------------------------------------+  |
-+-------------------------|------------------------------------------+
-                          |
-+-------------------------v------------------------------------------+
-|                    Hardware                                        |
-|                                                                    |
-|  +--------------------------------------------------------------+  |
-|  |                 RTX 4090 (AD102)                             |  |
-|  |                                                              |  |
-|  |  +-------------+  +-------------+  +----------------------+  |  |
-|  |  | GSP (RISCV) |  | GPC x12     |  | Memory Controller    |  |  |
-|  |  | - Firmware  |  | - SM x128   |  | - 24GB GDDR6X        |  |  |
-|  |  | - RPC       |  | - Tensors   |  | - 384-bit bus        |  |  |
-|  |  +-------------+  +-------------+  +----------------------+  |  |
-|  |                                                              |  |
-|  +--------------------------------------------------------------+  |
-+--------------------------------------------------------------------+
+```mermaid
+graph TD
+    subgraph User Space
+        ML[tinygrad / PyTorch]
+        PY[Python Bridge / ctypes]
+        LIB[libNVDAAL.dylib / SDK]
+        UC_CLI[IOKit User Client]
+    end
+
+    subgraph Kernel Space
+        KEXT[NVDAAL.kext]
+        DEV[NVDAALDevice]
+        MEM[NVDAALMemory]
+        QUEUE[NVDAALQueue]
+        GSP[NVDAALGsp]
+    end
+
+    ML --> PY
+    PY --> LIB
+    LIB --> UC_CLI
+    UC_CLI --> KEXT
+    KEXT --> DEV
+    DEV --> MEM
+    DEV --> QUEUE
+    DEV --> GSP
+    GSP -->|RPC| GSP_RISCV[RISC-V]
+    QUEUE -->|Compute| SM[GPU Cores]
+    MEM -->|Map| VRAM[24GB VRAM]
 ```
 
-## Componentes do Kext
+## Kext Components
 
 ### NVDAALDevice (IOService)
-Componente principal. Gerencia ciclo de vida.
+Main component. Manages lifecycle.
 
 ```cpp
 class NVDAALDevice : public IOService {
-    // PCI e MMIO
+    // PCI and MMIO
     IOPCIDevice *pciDevice;
     IOMemoryMap *bar0Map;      // MMIO registers
     IOMemoryMap *bar1Map;      // VRAM aperture
 
-    // Sub-componentes
+    // Sub-components
     NVDAALGsp *gsp;            // GSP controller
     NVDAALMemory *memory;      // Memory manager
     NVDAALQueue *computeQueue; // Compute submission
 };
 ```
 
+### Initialization Sequence (GSP)
+
+```mermaid
+sequenceDiagram
+    participant User as nvdaal-cli
+    participant UC as IOUserClient
+    participant Drv as NVDAAL
+    participant GSP as NVDAALGsp
+    participant HW as GPU (Falcon)
+
+    User->>UC: Open Connection
+    User->>UC: LoadFirmware(ptr, size)
+    UC->>Drv: loadGspFirmware()
+    Drv->>GSP: parseElfFirmware()
+    GSP->>GSP: Build Radix3 Table
+    GSP->>GSP: Setup WPR2 Meta
+    Drv->>GSP: boot()
+    GSP->>HW: Reset Falcon
+    GSP->>HW: Load Bootloader
+    GSP->>HW: Start RISC-V
+    GSP->>HW: Wait GSP_INIT_DONE
+    HW-->>GSP: INIT_DONE Signal
+    GSP-->>Drv: Success
+    Drv-->>UC: Success
+    UC-->>User: Success
+```
+
 ### NVDAALGsp
-Gerencia comunicação com o GSP (GPU System Processor).
+Manages communication with the GSP (GPU System Processor).
 
 ```cpp
 class NVDAALGsp {
@@ -98,13 +100,13 @@ class NVDAALGsp {
 ```
 
 ### NVDAALMemory
-Gerencia alocação de memória GPU.
+Manages GPU memory allocation.
 
 ```cpp
 class NVDAALMemory {
     // VRAM management
     uint64_t vramBase;
-    uint64_t vramSize;         // 24GB para 4090
+    uint64_t vramSize;         // 24GB for 4090
 
     // Allocations
     IOBufferMemoryDescriptor *allocVram(size_t size);
@@ -113,7 +115,7 @@ class NVDAALMemory {
 ```
 
 ### NVDAALQueue
-Submete comandos de compute para a GPU.
+Submits compute commands to the GPU.
 
 ```cpp
 class NVDAALQueue {
@@ -128,7 +130,7 @@ class NVDAALQueue {
 };
 ```
 
-## Registros Importantes (Compute)
+## Important Registers (Compute)
 
 ### GSP Registers (0x110000)
 ```
@@ -156,20 +158,20 @@ NV_PCE_FALCON_MAILBOX0     0x104040  // CE mailbox
 NV_PCE_INTR_EN             0x104100  // Interrupts
 ```
 
-## Sequência de Inicialização (Compute)
+## Initialization Sequence (Compute)
 
 ```
 1. PCI Probe
-   └─ Verificar Device ID (0x10DE:0x2684)
+   └─ Verify Device ID (0x10DE:0x2684)
 
 2. Map BARs
    ├─ BAR0: MMIO registers
    └─ BAR1: VRAM aperture (24GB)
 
 3. Early Init
-   ├─ Ler NV_PMC_BOOT_0 (chip ID)
-   ├─ Verificar WPR2 status
-   └─ Reset se necessário
+   ├─ Read NV_PMC_BOOT_0 (chip ID)
+   ├─ Check WPR2 status
+   └─ Reset if needed
 
 4. Load Firmware
    ├─ VBIOS (FWSEC ucode)
@@ -177,22 +179,22 @@ NV_PCE_INTR_EN             0x104100  // Interrupts
    └─ GSP firmware (gsp-570.144.bin)
 
 5. Initialize GSP
-   ├─ Alocar queues DMA
-   ├─ Configurar WPR metadata
-   ├─ Executar bootloader
-   └─ Aguardar GSP_INIT_DONE
+   ├─ Allocate DMA queues
+   ├─ Configure WPR metadata
+   ├─ Execute bootloader
+   └─ Wait for GSP_INIT_DONE
 
 6. Configure Compute
-   ├─ Alocar compute queue
-   ├─ Configurar memory manager
-   └─ Registrar serviço
+   ├─ Allocate compute queue
+   ├─ Configure memory manager
+   └─ Register service
 
 7. Ready for Compute!
 ```
 
 ## RPC Protocol
 
-Comunicação com GSP usa mensagens RPC:
+Communication with GSP uses RPC messages:
 
 ```cpp
 struct RpcMessage {
@@ -204,7 +206,7 @@ struct RpcMessage {
     uint8_t  payload[];
 };
 
-// Funções importantes para compute:
+// Important functions for compute:
 #define NV_VGPU_MSG_FUNCTION_GSP_SET_SYSTEM_INFO  0x15
 #define NV_VGPU_MSG_FUNCTION_SET_REGISTRY         0x16
 #define NV_VGPU_MSG_FUNCTION_GSP_RM_ALLOC         0x24
@@ -215,33 +217,25 @@ struct RpcMessage {
 
 ```
 +------------------+ 0x0
-|   MMIO (BAR0)    | 16MB - Registros
+|   MMIO (BAR0)    | 16MB - Registers
 +------------------+ 0x1000000
 |                  |
-|   VRAM (BAR1)    | 24GB - Memória GPU
+|   VRAM (BAR1)    | 24GB - GPU Memory
 |                  |
 +------------------+ 0x600000000
 |   GSP Heap       | 129MB
 +------------------+
 |   WPR2 Region    | Write Protected
 +------------------+
-|   Framebuffer    | (não usado - compute only)
+|   Framebuffer    | (not used - compute only)
 +------------------+
 ```
 
-## Diferenças macOS vs Linux
+## macOS vs Linux Differences
 
-| Aspecto | Linux | macOS |
-|---------|-------|-------|
+| Aspect | Linux | macOS |
+|--------|-------|-------|
 | DMA Memory | dma_alloc_coherent | IOBufferMemoryDescriptor |
 | MMIO Map | ioremap | mapDeviceMemoryWithIndex |
 | Interrupts | request_irq | registerInterrupt |
 | User Access | /dev/nvidiaX | IOUserClient |
-
-## Próximos Passos
-
-1. **Criar headers GSP** - Estruturas de RPC
-2. **Implementar DMA** - Alocação de buffers
-3. **Firmware loader** - Carregar gsp.bin
-4. **RPC engine** - Enviar/receber mensagens
-5. **Compute queue** - Submissão de kernels

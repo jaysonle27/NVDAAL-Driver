@@ -8,74 +8,19 @@
  * License: MIT
  */
 
-#include <IOKit/IOService.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
-#include <IOKit/pci/IOPCIDevice.h>
 #include <libkern/libkern.h>
 #include "NVDAALRegs.h"
+#include "NVDAALUserClient.h"
+#include "NVDAAL.h"
 
 #define super IOService
 
-// Forward declarations
-class NVDAALGsp;
-
-class NVDAAL : public IOService {
-    OSDeclareDefaultStructors(NVDAAL);
-
-private:
-    // PCI Device
-    IOPCIDevice *pciDevice;
-
-    // Memory maps
-    IOMemoryMap *bar0Map;      // MMIO registers (16MB)
-    IOMemoryMap *bar1Map;      // VRAM aperture (24GB on 4090)
-
-    // MMIO access
-    volatile uint32_t *mmioBase;
-    uint64_t mmioSize;
-
-    // VRAM info
-    uint64_t vramBase;
-    uint64_t vramSize;
-
-    // GPU info
-    uint32_t chipId;
-    uint32_t chipArch;
-    uint32_t chipImpl;
-    uint16_t deviceId;
-
-    // State
-    bool computeReady;
-
-public:
-    // IOService lifecycle
-    virtual bool init(OSDictionary *dictionary = nullptr) override;
-    virtual void free(void) override;
-    virtual IOService *probe(IOService *provider, SInt32 *score) override;
-    virtual bool start(IOService *provider) override;
-    virtual void stop(IOService *provider) override;
-
-private:
-    // Hardware initialization
-    bool mapBARs(void);
-    void unmapBARs(void);
-    bool identifyChip(void);
-    bool initGsp(void);
-    bool initCompute(void);
-
-    // Register access
-    uint32_t readReg(uint32_t offset);
-    void writeReg(uint32_t offset, uint32_t value);
-
-    // Helper
-    const char *getArchName(uint32_t arch);
-};
-
 OSDefineMetaClassAndStructors(NVDAAL, IOService);
 
-// ============================================================================
+// ============================================================================ 
 // IOService Lifecycle
-// ============================================================================
+// ============================================================================ 
 
 bool NVDAAL::init(OSDictionary *dictionary) {
     if (!super::init(dictionary)) {
@@ -93,6 +38,10 @@ bool NVDAAL::init(OSDictionary *dictionary) {
     chipArch = 0;
     chipImpl = 0;
     deviceId = 0;
+    gsp = nullptr;
+    memory = nullptr;
+    computeQueue = nullptr;
+    display = nullptr;
     computeReady = false;
 
     IOLog("NVDAAL: Compute driver initialized\n");
@@ -101,6 +50,22 @@ bool NVDAAL::init(OSDictionary *dictionary) {
 
 void NVDAAL::free(void) {
     IOLog("NVDAAL: Driver freed\n");
+    if (gsp) {
+        delete gsp;
+        gsp = nullptr;
+    }
+    if (memory) {
+        memory->release();
+        memory = nullptr;
+    }
+    if (computeQueue) {
+        computeQueue->release();
+        computeQueue = nullptr;
+    }
+    if (display) {
+        display->release();
+        display = nullptr;
+    }
     super::free();
 }
 
@@ -176,26 +141,55 @@ bool NVDAAL::start(IOService *provider) {
     }
 
     // Initialize GSP (required for Ada Lovelace)
-    IOLog("NVDAAL: GSP initialization required for compute\n");
-    // TODO: Full GSP init - for now just read status
+    IOLog("NVDAAL: Initializing GSP for %s...\n", getArchName(chipArch));
+    
+    gsp = new NVDAALGsp();
+    if (!gsp || !gsp->init(pciDevice, mmioBase)) {
+        IOLog("NVDAAL: Failed to create/init GSP controller\n");
+        if (gsp) { delete gsp; gsp = nullptr; }
+        unmapBARs();
+        return false;
+    }
 
-    // Read current GSP status
+    // Initialize Memory Manager
+    memory = NVDAALMemory::withDevice(pciDevice, bar1Map);
+    if (!memory) {
+        IOLog("NVDAAL: Failed to initialize Memory Manager\n");
+    }
+
+    // Initialize Compute Queue (GPFIFO)
+    // Offset 0x40 is a common doorbell register for early compute engines
+    computeQueue = NVDAALQueue::withSize(4096, (volatile uint32_t *)((uintptr_t)mmioBase + 0x40));
+    if (!computeQueue) {
+        IOLog("NVDAAL: Failed to initialize Compute Queue\n");
+    }
+
+    // Initialize Fake Display (Metal Spoofing)
+    display = NVDAALDisplay::withDevice(pciDevice);
+    if (display) {
+        if (!display->attach(this) || !display->start(this)) {
+            IOLog("NVDAAL: Failed to start Display Engine\n");
+            display->release();
+            display = nullptr;
+        }
+    }
+
+    // Load and Boot GSP
+    // Note: In a real scenario, firmware would be provided via UserClient or loaded from disk.
+    // For now, we prepare the structures. The actual boot() will wait for firmware.
+    
+    // Read current status
     uint32_t wpr2 = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_HI);
     IOLog("NVDAAL: WPR2 status: 0x%08x (enabled: %d)\n",
           wpr2, NV_PFB_WPR2_ENABLED(wpr2));
 
-    // Read FALCON status
-    uint32_t falcon = readReg(NV_PGSP_FALCON_CPUCTL);
-    IOLog("NVDAAL: GSP FALCON CPUCTL: 0x%08x\n", falcon);
-
-    // Read RISC-V status
-    uint32_t riscv = readReg(NV_PRISCV_RISCV_CPUCTL);
-    IOLog("NVDAAL: GSP RISC-V CPUCTL: 0x%08x (active: %d)\n",
-          riscv, (riscv >> 7) & 1);
+    if (NV_PFB_WPR2_ENABLED(wpr2)) {
+        IOLog("NVDAAL: GSP might already be running or WPR is locked.\n");
+    }
 
     IOLog("NVDAAL: ========================================\n");
     IOLog("NVDAAL: Driver started successfully\n");
-    IOLog("NVDAAL: Ready for GSP firmware loading\n");
+    IOLog("NVDAAL: Awaiting firmware injection from user-space\n");
     IOLog("NVDAAL: ========================================\n");
 
     registerService();
@@ -209,9 +203,9 @@ void NVDAAL::stop(IOService *provider) {
     super::stop(provider);
 }
 
-// ============================================================================
+// ============================================================================ 
 // Hardware Initialization
-// ============================================================================
+// ============================================================================ 
 
 bool NVDAAL::mapBARs(void) {
     if (!pciDevice) {
@@ -299,30 +293,111 @@ const char *NVDAAL::getArchName(uint32_t arch) {
     }
 }
 
-bool NVDAAL::initGsp(void) {
-    // TODO: Full GSP initialization
-    // This requires:
-    // 1. Loading GSP firmware (gsp-570.144.bin)
-    // 2. Loading bootloader
-    // 3. Setting up RPC queues
-    // 4. Booting GSP
-    // 5. Waiting for GSP_INIT_DONE
-
-    IOLog("NVDAAL: GSP init not yet implemented\n");
-    return false;
-}
-
 bool NVDAAL::initCompute(void) {
     // TODO: Initialize compute queues
-    // This requires GSP to be running first
-
     IOLog("NVDAAL: Compute init not yet implemented\n");
     return false;
 }
 
-// ============================================================================
-// Register Access
-// ============================================================================
+// ============================================================================ 
+// User Client
+// ============================================================================ 
+
+IOReturn NVDAAL::newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties, IOUserClient **handler) {
+    if (!handler) return kIOReturnBadArgument;
+
+    NVDAALUserClient *client = new NVDAALUserClient;
+    if (!client) return kIOReturnNoMemory;
+
+    if (!client->initWithTask(owningTask, securityID, type, properties)) {
+        client->release();
+        return kIOReturnInternalError;
+    }
+
+    if (!client->attach(this)) {
+        client->release();
+        return kIOReturnInternalError;
+    }
+
+    if (!client->start(this)) {
+        client->detach(this);
+        client->release();
+        return kIOReturnInternalError;
+    }
+
+    *handler = client;
+    return kIOReturnSuccess;
+}
+
+bool NVDAAL::loadGspFirmware(const void *data, size_t size) {
+    if (!gsp) {
+        IOLog("NVDAAL: GSP controller not available\n");
+        return false;
+    }
+
+    IOLog("NVDAAL: Received GSP firmware (%lu bytes)\n", size);
+
+    if (!gsp->parseElfFirmware(data, size)) {
+        IOLog("NVDAAL: Failed to parse firmware ELF\n");
+        return false;
+    }
+    
+    if (!gsp->boot()) {
+        IOLog("NVDAAL: Failed to boot GSP\n");
+        return false;
+    }
+
+    if (!gsp->waitForInitDone()) {
+        IOLog("NVDAAL: Timeout waiting for GSP init\n");
+        return false;
+    }
+
+        IOLog("NVDAAL: GSP successfully initialized!\n");
+
+        computeReady = true;
+
+        return true;
+
+    }
+
+    
+
+    uint64_t NVDAAL::allocVram(size_t size) {
+
+        if (!memory) return 0;
+
+        return memory->allocVram(size);
+
+    }
+
+    
+
+    bool NVDAAL::submitCommand(uint32_t cmd) {
+
+        if (!computeQueue) return false;
+
+        
+
+        bool ok = computeQueue->push(cmd);
+
+        if (ok) {
+
+            computeQueue->kick();
+
+        }
+
+        return ok;
+
+    }
+
+    
+
+    // ============================================================================
+
+    // Register Access
+
+    
+// ============================================================================ 
 
 uint32_t NVDAAL::readReg(uint32_t offset) {
     if (!mmioBase) {

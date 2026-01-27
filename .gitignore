@@ -3,6 +3,10 @@ Build/
 *.o
 *.kext
 *.dSYM/
+*.dylib
+
+# Compiled tools
+Tools/nvdaal-cli/nvdaal-cli
 
 # macOS
 .DS_Store

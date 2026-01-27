@@ -17,6 +17,44 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include "NVDAALRegs.h"
 
+// ============================================================================
+// ELF Definitions
+// ============================================================================
+
+#pragma pack(push, 1)
+
+typedef struct {
+    uint8_t  ident[16];      // Magic number and other info
+    uint16_t type;           // Object file type
+    uint16_t machine;        // Architecture
+    uint32_t version;        // Object file version
+    uint64_t entry;          // Entry point virtual address
+    uint64_t phoff;          // Program header table file offset
+    uint64_t shoff;          // Section header table file offset
+    uint32_t flags;          // Processor-specific flags
+    uint16_t ehsize;         // ELF header size in bytes
+    uint16_t phentsize;      // Program header table entry size
+    uint16_t phnum;          // Program header table entry count
+    uint16_t shentsize;      // Section header table entry size
+    uint16_t shnum;          // Section header table entry count
+    uint16_t shstrndx;       // Section header string table index
+} Elf64_Ehdr;
+
+typedef struct {
+    uint32_t name;           // Section name (string tbl index)
+    uint32_t type;           // Section type
+    uint64_t flags;          // Section flags
+    uint64_t addr;           // Section virtual addr at execution
+    uint64_t offset;         // Section file offset
+    uint64_t size;           // Section size in bytes
+    uint32_t link;           // Link to another section
+    uint32_t info;           // Additional section information
+    uint64_t addralign;      // Section alignment
+    uint64_t entsize;        // Entry size if section holds table
+} Elf64_Shdr;
+
+#pragma pack(pop)
+
 class NVDAALGsp {
 public:
     NVDAALGsp(void);
@@ -29,6 +67,7 @@ public:
     // Firmware loading
     bool loadFirmware(const char *firmwarePath);
     bool loadBootloader(const void *data, size_t size);
+    bool parseElfFirmware(const void *data, size_t size);
 
     // Boot sequence
     bool boot(void);
@@ -92,7 +131,6 @@ private:
     bool allocDmaBuffer(IOBufferMemoryDescriptor **desc, size_t size, uint64_t *physAddr);
     void freeDmaBuffer(IOBufferMemoryDescriptor **desc);
 
-    bool parseElfFirmware(const void *data, size_t size);
     bool buildRadix3PageTable(const void *firmware, size_t size);
     bool setupWprMeta(void);
 
@@ -112,7 +150,7 @@ private:
     static const size_t QUEUE_SIZE = 0x40000;         // 256KB per queue
     static const size_t GSP_HEAP_SIZE = 0x8100000;    // 129MB heap
     static const size_t FRTS_SIZE = 0x100000;         // 1MB FRTS
-    static const size_t PAGE_SIZE = 4096;
+    static const size_t GSP_PAGE_SIZE = 4096;
 };
 
 // ============================================================================

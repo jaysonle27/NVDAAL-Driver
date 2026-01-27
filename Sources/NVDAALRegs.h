@@ -287,7 +287,6 @@ typedef struct {
 
 // Radix3 page table constants
 #define GSP_RADIX3_LEVELS             4  // 0, 1, 2, 3
-#define GSP_PAGE_SIZE                 4096
 
 // ============================================================================
 // Compute Class Definitions

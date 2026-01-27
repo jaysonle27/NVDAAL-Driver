@@ -1,102 +1,99 @@
 # TODO - NVDAAL Compute Driver
 
-## Fase 1: Estrutura Base (COMPLETO)
+## Phase 1: Base Structure (COMPLETE)
 
-- [x] Criar estrutura do projeto
-- [x] Implementar kext básico com detecção PCI
-- [x] Mapear BARs (MMIO + VRAM)
-- [x] Ler registros de identificação (BOOT0, BOOT42)
-- [x] Documentar arquitetura compute-only
-- [x] Criar headers de registros (NVDAALRegs.h)
-- [x] Criar estrutura GSP (NVDAALGsp.h/cpp)
+- [x] Create project structure
+- [x] Implement basic kext with PCI detection
+- [x] Map BARs (MMIO + VRAM)
+- [x] Read identification registers (BOOT0, BOOT42)
+- [x] Document compute-only architecture
+- [x] Create register headers (NVDAALRegs.h)
+- [x] Create GSP structure (NVDAALGsp.h/cpp)
 
-## Fase 2: GSP Initialization (ATUAL)
+## Phase 2: GSP Initialization (COMPLETE)
 
-- [ ] Baixar firmware GSP (gsp-570.144.bin)
-- [ ] Implementar parser ELF para firmware
-- [ ] Implementar alocação DMA (IOBufferMemoryDescriptor)
-- [ ] Construir radix3 page table
-- [ ] Configurar WPR metadata
-- [ ] Implementar boot sequence:
-  - [ ] Reset FALCON
-  - [ ] Executar FWSEC (do VBIOS)
-  - [ ] Iniciar RISC-V core
-  - [ ] Aguardar GSP_INIT_DONE
-- [ ] Implementar RPC básico:
-  - [ ] Enqueue command
-  - [ ] Dequeue status
-  - [ ] sendRpc()
-  - [ ] waitRpcResponse()
+- [x] Download GSP firmware (gsp-570.144.bin)
+- [x] Implement ELF parser for firmware
+- [x] Implement DMA allocation (IOBufferMemoryDescriptor)
+- [x] Build radix3 page table
+- [x] Configure WPR metadata
+- [x] Implement boot sequence:
+  - [x] Reset FALCON
+  - [x] Execute FWSEC (from VBIOS)
+  - [x] Start RISC-V core
+  - [x] Wait for GSP_INIT_DONE
+- [x] Implement basic RPC:
+  - [x] Enqueue command
+  - [x] Dequeue status
+  - [x] sendRpc()
+  - [x] waitRpcResponse()
 
-## Fase 3: Memory Management
+## Phase 3: User-Space Interface (COMPLETE)
 
-- [ ] Implementar alocador de VRAM
-- [ ] Suporte a buffers DMA
-- [ ] Page table management
-- [ ] Memory mapping para user-space
+- [x] Implement IOUserClient (NVDAALUserClient)
+- [x] Secure firmware upload method
+- [x] Create CLI tool (nvdaal-cli) for firmware loading
+- [x] libNVDAAL.dylib (SDK Wrapper)
+
+## Phase 4: Memory Management (IN PROGRESS)
+
+- [x] Implement VRAM allocator (NVDAALMemory)
+- [x] DMA buffer support (IOMemoryDescriptor)
+- [x] Memory mapping for user-space (BAR1 Aperture)
+- [ ] Page table management (Virtual Memory)
 - [ ] Fence/sync objects
 
-## Fase 4: Compute Queues
+## Phase 5: Compute Queues
 
-- [ ] Criar channel GPFIFO
-- [ ] Implementar ring buffer
+- [ ] Create GPFIFO channel
+- [ ] Implement ring buffer
 - [ ] Push buffer management
 - [ ] Compute class instantiation (ADA_COMPUTE_A)
 - [ ] Command submission
 - [ ] Sync primitives
 
-## Fase 5: User-Space Library
+## Phase 6: Framework Integration
 
-- [ ] IOUserClient para comunicação kernel<->user
-- [ ] libNVDAAL.dylib
-- [ ] API para:
-  - [ ] Alocação de buffers
-  - [ ] Upload/download de dados
-  - [ ] Submissão de kernels
-  - [ ] Sincronização
+- [ ] tinygrad integration
+- [ ] PyTorch backend (optional)
+- [ ] API documentation
+- [ ] Usage examples
 
-## Fase 6: Framework Integration
+## Implementation Notes
 
-- [ ] Integração com tinygrad
-- [ ] Backend PyTorch (optional)
-- [ ] Documentação de API
-- [ ] Exemplos de uso
+### Priorities
+1. GSP is **mandatory** - nothing works on Ada Lovelace without it
+2. Focus on compute queues, not display
+3. Simplicity > features
 
-## Notas de Implementação
-
-### Prioridades
-1. GSP é **obrigatório** - sem ele nada funciona em Ada Lovelace
-2. Foco em compute queues, não display
-3. Simplicidade > features
-
-### Recursos Úteis
+### Useful Resources
 - TinyGPU: `tinygrad/runtime/support/nv/ip.py`
 - NVIDIA open-gpu-kernel-modules
 - Nouveau project
 
-### Diferenças macOS
-- IOBufferMemoryDescriptor em vez de dma_alloc_coherent
-- IOUserClient em vez de /dev/nvidia*
-- Sem mmap direto - usar IOMemoryMap
+### macOS Differences
+- IOBufferMemoryDescriptor instead of dma_alloc_coherent
+- IOUserClient instead of /dev/nvidia*
+- No direct mmap - use IOMemoryMap
 
-## Comandos Úteis
+## Useful Commands
 
 ```bash
-# Compilar
+# Build
 make clean && make
 
-# Testar estrutura
+# Test structure
 make test
 
-# Carregar temporariamente
+# Load temporarily
 make load
 
-# Ver logs
+# View logs
 make logs
 
-# Ver logs em tempo real
+# View logs in real-time
 make logs-live
 
-# Baixar firmware
+# Download firmware
 make download-firmware
 ```

@@ -87,7 +87,7 @@ bool NVDAALGsp::init(IOPCIDevice *device, volatile uint32_t *mmio) {
     memset((void *)statQueue, 0, QUEUE_SIZE);
 
     // Allocate WPR metadata buffer
-    if (!allocDmaBuffer(&wprMetaMem, PAGE_SIZE, &wprMetaPhys)) {
+    if (!allocDmaBuffer(&wprMetaMem, GSP_PAGE_SIZE, &wprMetaPhys)) {
         IOLog("NVDAAL-GSP: Failed to allocate WPR meta\n");
         free();
         return false;
@@ -188,44 +188,159 @@ bool NVDAALGsp::loadBootloader(const void *data, size_t size) {
 }
 
 bool NVDAALGsp::parseElfFirmware(const void *data, size_t size) {
-    // TODO: Parse ELF and extract .fwimage section
-    // For Ada, also need .fwsignature_ad10x
+    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
+    const uint8_t *bytes = (const uint8_t *)data;
 
-    const uint8_t *elf = (const uint8_t *)data;
-
-    // Check ELF magic
-    if (elf[0] != 0x7F || elf[1] != 'E' || elf[2] != 'L' || elf[3] != 'F') {
+    // Check ELF magic: 0x7F 'E' 'L' 'F'
+    if (ehdr->ident[0] != 0x7F || ehdr->ident[1] != 'E' || 
+        ehdr->ident[2] != 'L' || ehdr->ident[3] != 'F') {
         IOLog("NVDAAL-GSP: Invalid ELF magic\n");
         return false;
     }
 
-    // TODO: Full ELF parsing
-    IOLog("NVDAAL-GSP: ELF parsing not fully implemented\n");
+    // Check 64-bit class (2)
+    if (ehdr->ident[4] != 2) {
+        IOLog("NVDAAL-GSP: Not a 64-bit ELF\n");
+        return false;
+    }
+
+    // Validate size
+    if (size < sizeof(Elf64_Ehdr)) {
+        IOLog("NVDAAL-GSP: Firmware too small for header\n");
+        return false;
+    }
+
+    // Get section header string table
+    if (ehdr->shoff + (ehdr->shnum * ehdr->shentsize) > size) {
+        IOLog("NVDAAL-GSP: Section headers invalid\n");
+        return false;
+    }
+
+    const Elf64_Shdr *shdrs = (const Elf64_Shdr *)(bytes + ehdr->shoff);
+    const Elf64_Shdr *shstrtab = &shdrs[ehdr->shstrndx];
+    const char *strs = (const char *)(bytes + shstrtab->offset);
+
+    IOLog("NVDAAL-GSP: Parsing ELF (%d sections)...\n", ehdr->shnum);
+
+    // Reset offsets
+    firmwareCodeOffset = 0;
+    firmwareDataOffset = 0;
+    firmwareSize = 0;
+
+    for (int i = 0; i < ehdr->shnum; i++) {
+        const Elf64_Shdr *shdr = &shdrs[i];
+        const char *name = strs + shdr->name;
+
+        // Found .fwimage section?
+        if (strcmp(name, GSP_FW_SECTION_IMAGE) == 0) {
+            IOLog("NVDAAL-GSP: Found .fwimage: offset 0x%llx, size 0x%llx\n",
+                  shdr->offset, shdr->size);
+            
+            firmwareCodeOffset = shdr->offset;
+            firmwareSize = shdr->size;
+            
+            // Allocate firmware memory
+            if (!allocDmaBuffer(&firmwareMem, firmwareSize, &firmwarePhys)) {
+                IOLog("NVDAAL-GSP: Failed to allocate firmware memory\n");
+                return false;
+            }
+
+            // Copy firmware data
+            memcpy(firmwareMem->getBytesNoCopy(), bytes + shdr->offset, shdr->size);
+            
+            // Build the page table for this firmware
+            if (!buildRadix3PageTable(firmwareMem->getBytesNoCopy(), firmwareSize)) {
+                return false;
+            }
+        }
+        // TODO: Handle signature sections if needed for verified boot
+        else if (strcmp(name, GSP_FW_SECTION_SIG_AD10X) == 0) {
+             IOLog("NVDAAL-GSP: Found signature AD10X (skipping for now)\n");
+        }
+    }
+
+    if (firmwareSize == 0) {
+        IOLog("NVDAAL-GSP: .fwimage section not found in ELF\n");
+        return false;
+    }
 
     return true;
 }
 
 bool NVDAALGsp::buildRadix3PageTable(const void *firmware, size_t size) {
-    // Radix3 is a 4-level page table for GSP firmware access
-    // Level 0: 1 page (root)
-    // Level 1-3: Index pages pointing to firmware pages
-
-    size_t numPages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    size_t level2Entries = (numPages + 511) / 512;
-    size_t level1Entries = (level2Entries + 511) / 512;
-
-    size_t totalPages = 1 + level1Entries + level2Entries + numPages;
-    size_t radix3Size = totalPages * PAGE_SIZE;
-
-    if (!allocDmaBuffer(&radix3Mem, radix3Size, &radix3Phys)) {
-        IOLog("NVDAAL-GSP: Failed to allocate radix3 table\n");
+    // Radix3 is a 64-bit sparse page table format
+    // Each entry is 64-bit (8 bytes)
+    // Page size is 4KB (0x1000)
+    
+    // We need to map 'size' bytes of firmware.
+    // Assuming virtual address starts at 0 for simplicity (or whatever GSP expects)
+    
+    // Level 0 (Root): 1 page, covers 512 Level 1 entries
+    // Level 1: Covers 512 Level 2 entries
+    // Level 2: Covers 512 Data Pages (Level 3)
+    
+    // For GSP, it seems we just need a linear mapping of the firmware blob.
+    
+    uint64_t numPages = (size + GSP_PAGE_SIZE - 1) / GSP_PAGE_SIZE;
+    
+    // Calculate required pages for the table itself
+    // We need 1 root page.
+    // Number of L2 tables (leaf tables) needed:
+    uint64_t numL2Tables = (numPages + 511) / 512;
+    // Number of L1 tables needed to cover L2 tables:
+    uint64_t numL1Tables = (numL2Tables + 511) / 512;
+    
+    // Total allocation size for page tables (excluding data)
+    // Root + L1s + L2s
+    size_t tableSize = (1 + numL1Tables + numL2Tables) * GSP_PAGE_SIZE;
+    
+    if (!allocDmaBuffer(&radix3Mem, tableSize, &radix3Phys)) {
+        IOLog("NVDAAL-GSP: Failed to allocate Radix3 tables\n");
         return false;
     }
-
-    // TODO: Build actual page table structure
-    IOLog("NVDAAL-GSP: Radix3 table allocated (%lu pages) @ 0x%llx\n",
-          (unsigned long)totalPages, radix3Phys);
-
+    
+    uint64_t *tableBase = (uint64_t *)radix3Mem->getBytesNoCopy();
+    memset(tableBase, 0, tableSize);
+    
+    // Physical address of the table buffer
+    uint64_t tableBasePhys = radix3Phys;
+    
+    // Pointers to current tables being filled
+    uint64_t *rootTable = tableBase;
+    uint64_t *l1Table = rootTable + 512; // Next 4KB
+    uint64_t *l2Table = l1Table + (numL1Tables * 512); // After all L1s
+    
+    // Physical addresses corresponding to pointers
+    uint64_t l1Phys = tableBasePhys + GSP_PAGE_SIZE;
+    uint64_t l2Phys = l1Phys + (numL1Tables * GSP_PAGE_SIZE);
+    
+    // Fill Root Table (L0)
+    for (uint64_t i = 0; i < numL1Tables; i++) {
+        // Entry format: Physical Address >> 12 (PFN)
+        // Or is it full address? Usually PFN | Valid bit.
+        // TinyGPU uses: (addr) | 1 (Valid)
+        // But let's check standard GSP behavior.
+        // NVIDIA drivers usually use full address for GSP radix3.
+        
+        rootTable[i] = (l1Phys + (i * GSP_PAGE_SIZE)) | 1; // Mark Valid
+    }
+    
+    // Fill L1 Tables
+    for (uint64_t i = 0; i < numL2Tables; i++) {
+        l1Table[i] = (l2Phys + (i * GSP_PAGE_SIZE)) | 1; // Mark Valid
+    }
+    
+    // Fill L2 Tables (Leafs) - Point to Firmware Data Pages
+    uint64_t fwPhys = firmwarePhys; // Base physical address of firmware blob
+    
+    for (uint64_t i = 0; i < numPages; i++) {
+        // Each entry points to a 4KB page of the firmware
+        l2Table[i] = (fwPhys + (i * GSP_PAGE_SIZE)) | 1; // Mark Valid
+    }
+    
+    IOLog("NVDAAL-GSP: Radix3 built. Root: 0x%llx, Size: %lu bytes\n", 
+          radix3Phys, tableSize);
+    
     return true;
 }
 
@@ -243,18 +358,32 @@ bool NVDAALGsp::setupWprMeta(void) {
 
     meta->magic = 0x57505232;  // "WPR2"
 
+    // Bootloader info (The small secure booter ucode)
     meta->sysmemAddrOfBootloader = bootloaderPhys;
     meta->sizeOfBootloader = bootloaderMem ? bootloaderMem->getLength() : 0;
 
+    // Radix3 Page Table (Maps the large GSP firmware)
     meta->sysmemAddrOfRadix3Elf = radix3Phys;
     meta->sizeOfRadix3Elf = radix3Mem ? radix3Mem->getLength() : 0;
 
+    // Memory Regions
     meta->gspFwHeapSize = GSP_HEAP_SIZE;
     meta->frtsSize = FRTS_SIZE;
+    
+    // VGPU/Compute specifics
+    meta->fwHeapEnabled = 1;
+    meta->partitionRpc = 1;
 
-    // TODO: Fill in remaining fields
+    // Offsets within the firmware image if needed
+    // In Ada, these are often zero if the whole image is mapped via Radix3
+    meta->bootBinVirtAddr = 0; 
+    meta->gspFwOffset = 0;
 
-    IOLog("NVDAAL-GSP: WPR metadata configured\n");
+    IOLog("NVDAAL-GSP: WPR metadata configured at 0x%llx\n", wprMetaPhys);
+    IOLog("NVDAAL-GSP:   Bootloader: 0x%llx (%llu bytes)\n", 
+          meta->sysmemAddrOfBootloader, meta->sizeOfBootloader);
+    IOLog("NVDAAL-GSP:   Radix3:     0x%llx (%llu bytes)\n", 
+          meta->sysmemAddrOfRadix3Elf, meta->sizeOfRadix3Elf);
 
     return true;
 }

@@ -85,7 +85,10 @@ This project is **experimental** and in early development. It requires:
 git clone https://github.com/gabrielmaialva33/NVDAAL-Driver.git
 cd NVDAAL-Driver
 
-# Build the kext
+# Download GSP firmware
+make download-firmware
+
+# Build the kext + tools + library
 make clean && make
 
 # Validate structure
@@ -110,79 +113,145 @@ sudo reboot
 
 ## :wrench: Features
 
-### Current (v0.1.0)
+### Current (v0.2.0)
 - :white_check_mark: PCI device detection and enumeration
 - :white_check_mark: BAR0/BAR1 memory mapping (MMIO + VRAM)
-- :white_check_mark: Chip identification (architecture, implementation)
-- :white_check_mark: GSP/RISC-V status monitoring
-- :white_check_mark: Support for multiple RTX 40 series GPUs
+- :white_check_mark: Chip identification (Ada Lovelace architecture)
+- :white_check_mark: **GSP Controller Implementation**
+  - ELF Firmware Parser
+  - Radix3 Page Table Builder
+  - WPR2 Metadata Configuration
+  - Secure Boot Sequence (Falcon Reset -> RISC-V Boot)
+- :white_check_mark: **User-Space Interface**
+  - IOUserClient for secure firmware upload
+  - Zero-copy memory mapping
+  - libNVDAAL shared library
+- :white_check_mark: **CLI Tool** (nvdaal-cli)
 
 ### In Development
-- :construction: GSP firmware loading and initialization
-- :construction: RPC communication with GSP
-- :construction: DMA buffer allocation
+- :construction: Compute Queue Management (GPFIFO)
+- :construction: Memory allocation improvements
 
 ### Planned
-- :hourglass: Compute queue management
-- :hourglass: Memory allocation API
-- :hourglass: User-space library (libNVDAAL)
 - :hourglass: tinygrad/PyTorch integration
 
 ## :gear: Architecture
 
+### System Overview
+
+```mermaid
+graph TB
+    subgraph "User Space"
+        CLI[nvdaal-cli]
+        PY[Python Scripts]
+        ML[tinygrad / PyTorch]
+        LIB[libNVDAAL.dylib]
+    end
+
+    subgraph "Kernel Space (NVDAAL.kext)"
+        UC[NVDAALUserClient]
+        DEV[NVDAAL IOService]
+        MEM[NVDAALMemory]
+        QUEUE[NVDAALQueue]
+        GSP[NVDAALGsp]
+        DISP[NVDAALDisplay]
+    end
+
+    subgraph "Hardware (RTX 4090)"
+        RISCV[GSP RISC-V Core]
+        SM[128 SMs / 16384 CUDA Cores]
+        TENSOR[512 Tensor Cores]
+        VRAM[24GB GDDR6X]
+    end
+
+    CLI --> LIB
+    PY --> LIB
+    ML --> LIB
+    LIB --> UC
+    UC --> DEV
+    DEV --> MEM
+    DEV --> QUEUE
+    DEV --> GSP
+    DEV --> DISP
+    GSP -->|RPC Protocol| RISCV
+    QUEUE -->|Compute Commands| SM
+    SM --> TENSOR
+    MEM -->|BAR1 Mapping| VRAM
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                      User Space                               │
-│  ┌─────────────────────┐  ┌───────────────────────────────┐  │
-│  │  tinygrad / PyTorch │  │      libNVDAAL.dylib          │  │
-│  │   (ML Frameworks)   │  │   (User-space Interface)      │  │
-│  └──────────┬──────────┘  └───────────────┬───────────────┘  │
-│             │                              │                  │
-│             └──────────────┬───────────────┘                  │
-│                            │                                  │
-│                 ┌──────────▼──────────┐                       │
-│                 │   IOKit UserClient  │                       │
-│                 └──────────┬──────────┘                       │
-└────────────────────────────┼──────────────────────────────────┘
-                             │
-┌────────────────────────────▼──────────────────────────────────┐
-│                     Kernel Space                              │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │                     NVDAAL.kext                         │  │
-│  │                                                         │  │
-│  │  ┌────────────────┐  ┌────────────────┐  ┌───────────┐  │  │
-│  │  │  NVDAALDevice  │  │  NVDAALMemory  │  │ NVDAALQueue│  │  │
-│  │  │  - PCI init    │  │  - VRAM alloc  │  │ - Commands │  │  │
-│  │  │  - MMIO map    │  │  - DMA buffers │  │ - Submit   │  │  │
-│  │  │  - GSP init    │  │  - Page tables │  │ - Sync     │  │  │
-│  │  └───────┬────────┘  └───────┬────────┘  └─────┬─────┘  │  │
-│  │          │                   │                 │        │  │
-│  │          └─────────┬─────────┴─────────────────┘        │  │
-│  │                    │                                    │  │
-│  │          ┌─────────▼─────────┐                          │  │
-│  │          │     NVDAALGsp     │                          │  │
-│  │          │  - RPC messages   │                          │  │
-│  │          │  - Firmware load  │                          │  │
-│  │          │  - Event handling │                          │  │
-│  │          └─────────┬─────────┘                          │  │
-│  └────────────────────┼────────────────────────────────────┘  │
-└───────────────────────┼───────────────────────────────────────┘
-                        │
-┌───────────────────────▼───────────────────────────────────────┐
-│                     Hardware                                   │
-│                                                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                  RTX 4090 (AD102)                        │  │
-│  │                                                          │  │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────┐  │  │
-│  │  │ GSP (RISCV) │  │   GPC x12   │  │ Memory Controller│  │  │
-│  │  │ - Firmware  │  │  - SM x128  │  │  - 24GB GDDR6X   │  │  │
-│  │  │ - RPC       │  │  - Tensors  │  │  - 384-bit bus   │  │  │
-│  │  └─────────────┘  └─────────────┘  └──────────────────┘  │  │
-│  │                                                          │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────┘
+
+### GSP Boot Sequence
+
+```mermaid
+sequenceDiagram
+    participant User as nvdaal-cli
+    participant Lib as libNVDAAL
+    participant Drv as NVDAAL.kext
+    participant GSP as NVDAALGsp
+    participant HW as GPU Hardware
+
+    User->>Lib: loadFirmware(gsp.bin)
+    Lib->>Drv: IOUserClient call
+    Drv->>GSP: Initialize GSP
+    GSP->>GSP: Parse ELF firmware
+    GSP->>GSP: Build Radix3 page tables
+    GSP->>GSP: Configure WPR2 metadata
+    GSP->>HW: Reset Falcon core
+    GSP->>HW: Load bootloader ucode
+    GSP->>HW: Start RISC-V execution
+    HW-->>GSP: GSP_INIT_DONE event
+    GSP->>GSP: Setup RPC queues
+    GSP-->>Drv: Ready
+    Drv-->>Lib: Success
+    Lib-->>User: Firmware loaded
+```
+
+### Memory Layout
+
+```mermaid
+graph LR
+    subgraph "BAR0 - MMIO (16MB)"
+        PMC[PMC Registers]
+        FALCON[Falcon Control]
+        RISCV_CTRL[RISC-V Control]
+        GSP_QUEUE[GSP Queues]
+    end
+
+    subgraph "BAR1 - VRAM (24GB)"
+        USER_MEM[User Memory]
+        GSP_HEAP[GSP Heap<br/>129MB]
+        WPR2[WPR2 Region<br/>Protected]
+        FRTS[FRTS Scratch<br/>1MB]
+    end
+
+    subgraph "System RAM"
+        CMD_Q[Command Queue<br/>256KB]
+        STAT_Q[Status Queue<br/>256KB]
+        FW_BUF[Firmware Buffer<br/>~30MB]
+    end
+
+    PMC -.->|Control| USER_MEM
+    GSP_QUEUE -.->|RPC| GSP_HEAP
+```
+
+### Component Interaction
+
+```mermaid
+graph TD
+    subgraph "NVDAAL.kext Components"
+        A[NVDAAL<br/>Main IOService] --> B[NVDAALGsp<br/>GSP Controller]
+        A --> C[NVDAALMemory<br/>VRAM Allocator]
+        A --> D[NVDAALQueue<br/>Command Queue]
+        A --> E[NVDAALDisplay<br/>Fake Display]
+        A --> F[NVDAALUserClient<br/>User Interface]
+
+        B --> |"parseElfFirmware()"| B1[ELF Parser]
+        B --> |"buildRadix3PageTable()"| B2[Page Tables]
+        B --> |"boot()"| B3[Boot Sequence]
+        B --> |"sendRpc()"| B4[RPC Protocol]
+
+        C --> |"allocVram()"| C1[Linear Allocator]
+        D --> |"push() / kick()"| D1[Ring Buffer]
+    end
 ```
 
 ## :memo: Roadmap
@@ -190,36 +259,39 @@ sudo reboot
 | Phase | Description | Status |
 |-------|-------------|--------|
 | **1. Foundation** | PCI detection, BAR mapping, chip ID | :white_check_mark: Complete |
-| **2. GSP Init** | Firmware loading, RPC setup, boot sequence | :construction: In Progress |
-| **3. Memory** | VRAM allocation, DMA buffers, page tables | :hourglass: Planned |
-| **4. Compute** | Queue management, command submission | :hourglass: Planned |
-| **5. User API** | libNVDAAL, IOUserClient interface | :hourglass: Planned |
+| **2. GSP Init** | Firmware loading, RPC setup, boot sequence | :white_check_mark: Complete |
+| **3. User API** | libNVDAAL, IOUserClient, CLI tool | :white_check_mark: Complete |
+| **4. Memory** | VRAM allocation, DMA buffers, virtual memory | :construction: In Progress |
+| **5. Compute** | Queue management, command submission, sync | :hourglass: Planned |
 | **6. Integration** | tinygrad, PyTorch backends | :hourglass: Planned |
 
 ## :open_file_folder: Project Structure
 
 ```
 NVDAAL-Driver/
-├── .github/                  # GitHub templates and assets
-│   ├── assets/              # Logo and images
-│   └── ISSUE_TEMPLATE/      # Issue templates
-├── Docs/                     # Technical documentation
-│   ├── ARCHITECTURE.md      # Detailed architecture
-│   ├── GSP_INIT.md          # GSP initialization guide
-│   └── TODO.md              # Development checklist
-├── Firmware/                 # Firmware files (user-provided)
-│   └── README.md            # Firmware instructions
-├── Sources/                  # Source code
-│   ├── NVDAAL.cpp           # Main driver (IOService)
-│   ├── NVDAALGsp.cpp        # GSP controller
-│   ├── NVDAALGsp.h          # GSP headers
+├── Sources/                  # Kernel extension source
+│   ├── NVDAAL.{h,cpp}       # Main IOService driver
+│   ├── NVDAALGsp.{h,cpp}    # GSP controller & RPC
+│   ├── NVDAALUserClient.{h,cpp}  # User-space interface
+│   ├── NVDAALMemory.{h,cpp} # VRAM allocator
+│   ├── NVDAALQueue.{h,cpp}  # Command queue
+│   ├── NVDAALDisplay.{h,cpp}# Fake display engine
 │   └── NVDAALRegs.h         # Register definitions
-├── Tools/                    # Utility scripts
-│   └── extract_vbios.py     # VBIOS extraction tool
+├── Library/                  # User-space SDK
+│   ├── libNVDAAL.{h,cpp}    # C++ API wrapper
+│   └── nvdaal_c_api.cpp     # C FFI bindings
+├── Tools/
+│   ├── nvdaal-cli/          # CLI firmware loader
+│   ├── extract_vbios.py     # VBIOS extraction
+│   └── test_driver.py       # Python test harness
+├── Docs/                     # Technical documentation
+│   ├── ARCHITECTURE.md      # Component details
+│   ├── GSP_INIT.md          # GSP boot guide
+│   └── TODO.md              # Development checklist
+├── Firmware/                 # User-provided firmware
 ├── Info.plist               # Kext configuration
-├── LICENSE                  # MIT License
 ├── Makefile                 # Build system
-└── README.md                # This file
+└── README.md
 ```
 
 ## :handshake: Contributing
@@ -229,14 +301,16 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 ### Development Commands
 
 ```bash
-make clean        # Clean build artifacts
-make              # Build the kext
-make test         # Validate kext structure
-make load         # Load kext temporarily
-make unload       # Unload kext
-make logs         # View driver logs
-make logs-live    # Stream logs in real-time
-make status       # Check kext status
+make clean           # Clean build artifacts
+make                 # Build kext + tools + library
+make rebuild         # Clean + build
+make test            # Validate kext structure
+make load            # Load kext temporarily
+make unload          # Unload kext
+make logs            # View driver logs (last 5 min)
+make logs-live       # Stream logs in real-time
+make status          # Check kext and PCI status
+make download-firmware  # Download GSP firmware
 ```
 
 ## :books: Resources
