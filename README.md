@@ -101,6 +101,23 @@ make load
 make logs
 ```
 
+### :zap: Boot Sequence
+
+```bash
+# Full boot with all firmwares (recommended)
+nvdaal-cli boot Firmware/
+
+# Legacy single-file load
+nvdaal-cli load Firmware/gsp-570.144.bin
+```
+
+The `boot` command expects these files in the firmware directory:
+| File | Required | Purpose |
+|------|----------|---------|
+| `gsp-570.144.bin` (or `gsp.bin`) | Yes | GSP-RM firmware |
+| `booter_load-ad102-570.144.bin` | No | SEC2 booter (Heavy-Secure) |
+| `AD102.rom` | No | VBIOS for FWSEC-FRTS |
+
 ### :package: Permanent Installation
 
 ```bash
@@ -113,15 +130,20 @@ sudo reboot
 
 ## :wrench: Features
 
-### Current (v0.3.0 - Pioneer)
+### Current (v0.4.0 - Enhanced Boot)
 - :white_check_mark: PCI device detection and enumeration
 - :white_check_mark: BAR0/BAR1 memory mapping (MMIO + VRAM)
 - :white_check_mark: Chip identification (Ada Lovelace architecture)
 - :white_check_mark: **GSP Controller Implementation**
-  - ELF Firmware Parser
-  - Radix3 Page Table Builder
+  - ELF Firmware Parser (non-contiguous 63MB support)
+  - Radix3 Page Table Builder (per-page physical addressing)
   - WPR2 Metadata Configuration
-  - Secure Boot Sequence (Falcon Reset -> RISC-V Boot)
+  - **Enhanced Boot Sequence**:
+    - SEC2 FALCON reset
+    - FWSEC-FRTS execution (WPR2 setup)
+    - booter_load on SEC2 (HS mode)
+    - RISC-V core start with diagnostics
+  - Detailed error stages (`bootEx()`)
 - :white_check_mark: **Full RPC Engine** (rmAlloc, rmControl)
 - :white_check_mark: **Interrupt Driven Architecture**
   - MSI (Message Signaled Interrupts) support
@@ -137,7 +159,13 @@ sudo reboot
   - IOUserClient for secure firmware upload
   - Zero-copy memory mapping
   - libNVDAAL shared library
+  - Detailed error codes from kernel
 - :white_check_mark: **CLI Tool** (nvdaal-cli)
+  - `boot` command for full sequence
+  - `load` command for legacy loading
+- :white_check_mark: **Multi-Architecture Build**
+  - arm64 (Apple Silicon)
+  - x86_64 (Intel)
 
 ### In Development
 - :construction: Compute Class (ADA_COMPUTE_A) Context
@@ -148,11 +176,13 @@ sudo reboot
 
 ## :star: Pioneer Insights
 
-As of v0.3.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
+As of v0.4.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
 
 - **Lock-Free GSP RPC**: Using synchronous memory barriers and stack-allocated buffers to minimize kernel latency during GPU resource management.
 - **Hardware-Native GPFIFO**: Fully compliant with the 128-bit entry format required by AD10x chips, enabling direct hardware work submission.
 - **Dynamic MMU**: Implements a real-time Bump Allocator for GPU Virtual Address Space, ensuring memory isolation and proper page alignment for Tensor core workloads.
+- **Complete Boot Pipeline**: Full SEC2 + FWSEC + GSP-RM boot sequence matching NVIDIA's reference implementation, with detailed error stage reporting for debugging.
+- **Non-Contiguous Memory**: Handles 63MB GSP-RM firmware without requiring physically contiguous allocation, using per-page Radix3 table entries.
 
 ### :chart_with_upwards_trend: Performance Status
 | Component | Status | Optimization |
@@ -160,6 +190,7 @@ As of v0.3.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lo
 | RPC Latency | :low_brightness: Low | Stack-based buffers |
 | Memory Alloc | :high_brightness: High | Bump Allocator (Linear) |
 | Submission | :high_brightness: High | Direct Doorbell (UserD) |
+| Boot Diagnostics | :high_brightness: High | Error stage codes |
 
 ## :gear: Architecture
 
@@ -205,7 +236,7 @@ graph TB
     MEM -->|BAR1 Mapping| VRAM
 ```
 
-### GSP Boot Sequence
+### GSP Boot Sequence (v0.4.0)
 
 ```mermaid
 sequenceDiagram
@@ -213,22 +244,44 @@ sequenceDiagram
     participant Lib as libNVDAAL
     participant Drv as NVDAAL.kext
     participant GSP as NVDAALGsp
-    participant HW as GPU Hardware
+    participant SEC2 as SEC2 Falcon
+    participant HW as GSP RISC-V
 
-    User->>Lib: loadFirmware(gsp.bin)
-    Lib->>Drv: IOUserClient call
+    User->>Lib: boot(firmware_dir)
+    Note over Lib: Load VBIOS, booter_load, GSP-RM
+
+    Lib->>Drv: loadVbios(AD102.rom)
+    Lib->>Drv: loadBooterLoad(booter_load.bin)
+    Lib->>Drv: loadFirmware(gsp.bin)
+
     Drv->>GSP: Initialize GSP
-    GSP->>GSP: Parse ELF firmware
+    GSP->>GSP: Parse ELF (63MB, non-contiguous)
     GSP->>GSP: Build Radix3 page tables
-    GSP->>GSP: Configure WPR2 metadata
-    GSP->>HW: Reset Falcon core
-    GSP->>HW: Load bootloader ucode
-    GSP->>HW: Start RISC-V execution
+
+    GSP->>HW: Reset GSP Falcon
+    GSP->>SEC2: Reset SEC2 Falcon
+
+    alt VBIOS loaded
+        GSP->>SEC2: Execute FWSEC-FRTS
+        SEC2-->>GSP: WPR2 region configured
+    else No VBIOS
+        GSP->>GSP: Check WPR2 (EFI may have set it)
+    end
+
+    GSP->>GSP: Setup WPR metadata
+
+    alt booter_load available
+        GSP->>SEC2: Execute booter_load (HS mode)
+        SEC2->>SEC2: Authenticate GSP-RM
+        SEC2-->>GSP: Boot handoff ready
+    end
+
+    GSP->>HW: Start RISC-V core
     HW-->>GSP: GSP_INIT_DONE event
     GSP->>GSP: Setup RPC queues
-    GSP-->>Drv: Ready
-    Drv-->>Lib: Success
-    Lib-->>User: Firmware loaded
+    GSP-->>Drv: Ready (or error stage)
+    Drv-->>Lib: Success / Error code
+    Lib-->>User: Boot complete
 ```
 
 ### Memory Layout
@@ -237,7 +290,8 @@ sequenceDiagram
 graph LR
     subgraph "BAR0 - MMIO (16MB)"
         PMC[PMC Registers]
-        FALCON[Falcon Control]
+        FALCON[GSP Falcon]
+        SEC2[SEC2 Falcon]
         RISCV_CTRL[RISC-V Control]
         GSP_QUEUE[GSP Queues]
     end
@@ -245,17 +299,22 @@ graph LR
     subgraph "BAR1 - VRAM (24GB)"
         USER_MEM[User Memory]
         GSP_HEAP[GSP Heap<br/>129MB]
-        WPR2[WPR2 Region<br/>Protected]
+        WPR2[WPR2 Region<br/>Protected by FWSEC]
         FRTS[FRTS Scratch<br/>1MB]
     end
 
-    subgraph "System RAM"
+    subgraph "System RAM (DMA)"
         CMD_Q[Command Queue<br/>256KB]
         STAT_Q[Status Queue<br/>256KB]
-        FW_BUF[Firmware Buffer<br/>~30MB]
+        FW_BUF[GSP-RM Firmware<br/>~63MB non-contiguous]
+        BOOTER[booter_load<br/>~1MB]
+        VBIOS[VBIOS/FWSEC<br/>~4MB]
+        RADIX3[Radix3 Page Tables]
     end
 
     PMC -.->|Control| USER_MEM
+    SEC2 -.->|Execute| BOOTER
+    FALCON -.->|Load| FW_BUF
     GSP_QUEUE -.->|RPC| GSP_HEAP
 ```
 
@@ -287,9 +346,10 @@ graph TD
 | **1. Foundation** | PCI detection, BAR mapping, chip ID | :white_check_mark: Complete |
 | **2. GSP Init** | Firmware loading, RPC setup, boot sequence | :white_check_mark: Complete |
 | **3. User API** | libNVDAAL, IOUserClient, CLI tool | :white_check_mark: Complete |
-| **4. Memory** | VRAM allocation, DMA buffers, virtual memory | :construction: In Progress |
-| **5. Compute** | Queue management, command submission, sync | :hourglass: Planned |
-| **6. Integration** | tinygrad, PyTorch backends | :hourglass: Planned |
+| **4. Enhanced Boot** | SEC2/FWSEC/WPR2, booter_load, error diagnostics | :white_check_mark: Complete |
+| **5. Memory** | VRAM allocation, DMA buffers, virtual memory | :construction: In Progress |
+| **6. Compute** | Queue management, command submission, sync | :hourglass: Planned |
+| **7. Integration** | tinygrad, PyTorch backends | :hourglass: Planned |
 
 ## :open_file_folder: Project Structure
 
