@@ -46,6 +46,7 @@ enum {
     kNVDAALMethodWaitSemaphore,
     kNVDAALMethodLoadBooterLoad,
     kNVDAALMethodLoadVbios,
+    kNVDAALMethodLoadBootloader,
     kNVDAALMethodCount
 };
 

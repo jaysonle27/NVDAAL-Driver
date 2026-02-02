@@ -130,7 +130,7 @@ sudo reboot
 
 ## :wrench: Features
 
-### Current (v0.4.0 - Enhanced Boot)
+### Current (v0.5.0 - VBIOS Parsing & FWSEC Execution)
 - :white_check_mark: PCI device detection and enumeration
 - :white_check_mark: BAR0/BAR1 memory mapping (MMIO + VRAM)
 - :white_check_mark: Chip identification (Ada Lovelace architecture)
@@ -138,6 +138,15 @@ sudo reboot
   - ELF Firmware Parser (non-contiguous 63MB support)
   - Radix3 Page Table Builder (per-page physical addressing)
   - WPR2 Metadata Configuration
+  - **Complete VBIOS Parsing**:
+    - ROM image scanning (0x55AA signatures)
+    - PCIR header parsing & FWSEC image detection (type 0xE0)
+    - BIT (BIOS Information Table) header scanning
+    - PMU Lookup Table & Falcon Ucode Descriptor extraction
+  - **Real FWSEC-FRTS Execution**:
+    - Falcon IMEM/DMEM ucode loading
+    - DMEMMAPPER interface patching (FRTS command 0x15)
+    - GSP Falcon boot with timeout monitoring
   - **Enhanced Boot Sequence**:
     - SEC2 FALCON reset
     - FWSEC-FRTS execution (WPR2 setup)
@@ -178,12 +187,13 @@ sudo reboot
 
 ## :star: Pioneer Insights
 
-As of v0.4.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
+As of v0.5.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
 
 - **Lock-Free GSP RPC**: Using synchronous memory barriers and stack-allocated buffers to minimize kernel latency during GPU resource management.
 - **Hardware-Native GPFIFO**: Fully compliant with the 128-bit entry format required by AD10x chips, enabling direct hardware work submission.
 - **Dynamic MMU**: Implements a real-time Bump Allocator for GPU Virtual Address Space, ensuring memory isolation and proper page alignment for Tensor core workloads.
 - **Complete Boot Pipeline**: Full SEC2 + FWSEC + GSP-RM boot sequence matching NVIDIA's reference implementation, with detailed error stage reporting for debugging.
+- **Native VBIOS Parsing**: Complete VBIOS ROM parsing including PCIR headers, BIT tables, PMU lookup, and Falcon ucode extraction for real FWSEC-FRTS execution.
 - **Non-Contiguous Memory**: Handles 63MB GSP-RM firmware without requiring physically contiguous allocation, using per-page Radix3 table entries.
 
 ### :chart_with_upwards_trend: Performance Status

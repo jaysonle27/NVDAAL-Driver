@@ -43,11 +43,15 @@ int cmd_boot(const std::string& firmwareDir) {
     // Paths to firmware files
     std::string gspPath = firmwareDir + "/gsp-570.144.bin";
     std::string booterPath = firmwareDir + "/booter_load-ad102-570.144.bin";
+    std::string bootloaderPath = firmwareDir + "/bootloader-ad102-570.144.bin";
     std::string vbiosPath = firmwareDir + "/AD102.rom";
 
     // Fall back to generic names
     if (!file_exists(gspPath)) {
         gspPath = firmwareDir + "/gsp.bin";
+    }
+    if (!file_exists(vbiosPath)) {
+        vbiosPath = firmwareDir + "/vbios_asus_rog_strix_4090.rom";
     }
 
     // Check required GSP firmware
@@ -69,20 +73,32 @@ int cmd_boot(const std::string& firmwareDir) {
         std::cout << "[1] VBIOS not found, skipping FWSEC (may be done by EFI)" << std::endl;
     }
 
-    // Step 2: Load booter_load (optional - for SEC2)
+    // Step 2: Load bootloader (optional - GSP bootloader)
+    if (file_exists(bootloaderPath)) {
+        std::cout << "[2] Loading GSP bootloader..." << std::endl;
+        if (client.loadBootloader(bootloaderPath)) {
+            std::cout << "    OK: bootloader loaded" << std::endl;
+        } else {
+            std::cerr << "    Warning: bootloader load failed" << std::endl;
+        }
+    } else {
+        std::cout << "[2] GSP bootloader not found" << std::endl;
+    }
+
+    // Step 3: Load booter_load (optional - for SEC2)
     if (file_exists(booterPath)) {
-        std::cout << "[2] Loading booter_load for SEC2..." << std::endl;
+        std::cout << "[3] Loading booter_load for SEC2..." << std::endl;
         if (client.loadBooterLoad(booterPath)) {
             std::cout << "    OK: booter_load loaded" << std::endl;
         } else {
             std::cerr << "    Warning: booter_load failed (continuing with direct boot)" << std::endl;
         }
     } else {
-        std::cout << "[2] booter_load not found, using direct boot" << std::endl;
+        std::cout << "[3] booter_load not found, using direct boot" << std::endl;
     }
 
-    // Step 3: Load GSP firmware (required)
-    std::cout << "[3] Loading GSP firmware: " << gspPath << std::endl;
+    // Step 4: Load GSP firmware (required)
+    std::cout << "[4] Loading GSP firmware: " << gspPath << std::endl;
     if (client.loadFirmware(gspPath)) {
         std::cout << "[+] SUCCESS: GSP firmware loaded and boot sequence initiated!" << std::endl;
         return 0;

@@ -30,6 +30,8 @@ public:
     bool loadFirmware(const void* data, size_t size);
 
     // Boot sequence firmware (call before loadFirmware)
+    bool loadBootloader(const std::string& path);  // GSP bootloader
+    bool loadBootloader(const void* data, size_t size);
     bool loadBooterLoad(const std::string& path);  // SEC2 booter firmware
     bool loadBooterLoad(const void* data, size_t size);
     bool loadVbios(const std::string& path);       // VBIOS for FWSEC

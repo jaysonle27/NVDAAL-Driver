@@ -16,6 +16,7 @@
 #define METHOD_WAIT_SYNC 3
 #define METHOD_LOAD_BOOTER 4
 #define METHOD_LOAD_VBIOS 5
+#define METHOD_LOAD_BOOTLOADER 6
 
 namespace nvdaal {
 
@@ -139,6 +140,43 @@ bool Client::waitSemaphore(uint64_t gpuAddr, uint32_t value) {
         input, 2,
         NULL, NULL
     );
+
+    return (kr == KERN_SUCCESS);
+}
+
+bool Client::loadBootloader(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        std::cerr << "[libNVDAAL] Error: Could not open file " << path << std::endl;
+        return false;
+    }
+
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    if (size <= 0) return false;
+
+    std::vector<uint8_t> buffer(size);
+    if (!file.read((char*)buffer.data(), size)) return false;
+
+    return loadBootloader(buffer.data(), size);
+}
+
+bool Client::loadBootloader(const void* data, size_t size) {
+    if (!connect()) return false;
+
+    uint64_t args[2] = { (uint64_t)data, (uint64_t)size };
+
+    kern_return_t kr = IOConnectCallScalarMethod(
+        (io_connect_t)connection,
+        METHOD_LOAD_BOOTLOADER,
+        args, 2,
+        NULL, NULL
+    );
+
+    if (kr != KERN_SUCCESS) {
+        std::cerr << "[libNVDAAL] loadBootloader failed: 0x" << std::hex << kr << std::dec << std::endl;
+    }
 
     return (kr == KERN_SUCCESS);
 }

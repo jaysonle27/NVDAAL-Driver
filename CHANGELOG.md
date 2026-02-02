@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-02 - VBIOS Parsing & FWSEC Execution
+
+### Added
+- **Complete VBIOS Parsing** (NVDAALGsp)
+  - ROM image scanning for 0x55AA signatures
+  - PCIR header parsing (Vendor ID, Device ID, code type)
+  - Automatic FWSEC image detection (type 0xE0)
+  - BIT (BIOS Information Table) header scanning
+  - Falcon Data token extraction (0x70)
+- **PMU Lookup Table Parser**
+  - Locates FWSEC ucode descriptors in VBIOS
+  - Extracts IMEM/DMEM offsets and sizes
+  - Parses Falcon Ucode Descriptor v3 format
+- **Real FWSEC-FRTS Execution**
+  - `loadFalconUcode()` - Loads ucode into GSP Falcon IMEM/DMEM
+  - DMEMMAPPER interface patching (sets initCmd to 0x15 for FRTS)
+  - Full GSP Falcon boot sequence for FWSEC
+  - Timeout handling with periodic status logging
+- **New VBIOS Structures** (NVDAALRegs.h)
+  - `VbiosRomHeader` / `VbiosPcirHeader` - ROM parsing
+  - `BitHeader` / `BitToken` - BIT table parsing
+  - `PmuLookupTableHeader` / `PmuLookupEntry` - PMU table
+  - `FalconUcodeDescV3` - Falcon ucode descriptor
+  - `DmemMapperHeader` - DMEMMAPPER interface
+  - `FwsecInfo` - Extracted FWSEC metadata
+
+### Changed
+- **executeFwsecFrts()** completely rewritten
+  - Now actually executes FWSEC ucode instead of just checking WPR2
+  - Parses VBIOS on-demand if not already parsed
+  - Patches DMEM to configure FRTS command
+  - Monitors GSP Falcon execution status
+- Added FWSEC state tracking in NVDAALGsp (fwsecInfo, fwsecImageOffset/Size)
+
+### Technical Details
+- FWSEC image identified by PCIR codeType = 0xE0
+- BIT header pattern: 0xFF 0xB8 'B' 'I' 'T' 0x00
+- DMEMMAPPER signature: 0x50414D44 ("DMAP")
+- FRTS command code: 0x15
+
 ## [0.4.0] - 2026-02-01 - Enhanced Boot
 
 ### Added
@@ -142,6 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IOKit-based kernel extension
 - Compute-only focus (no display support)
 
+[0.5.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.2.0...v0.3.0

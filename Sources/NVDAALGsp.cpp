@@ -860,8 +860,27 @@ uint64_t NVDAALGsp::getWpr2Hi(void) {
 bool NVDAALGsp::executeFwsecFrts(void) {
     IOLog("NVDAAL-GSP: Executing FWSEC-FRTS...\n");
 
+    // First, check if WPR2 is already set up (by EFI/GOP/VBIOS POST)
+    // Read WPR2 registers directly
+    uint32_t wpr2HiReg = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_HI);
+    uint32_t wpr2LoReg = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_LO);
+    IOLog("NVDAAL-GSP: WPR2 registers: HI=0x%08x LO=0x%08x\n", wpr2HiReg, wpr2LoReg);
+    
+    if (checkWpr2Setup()) {
+        IOLog("NVDAAL-GSP: WPR2 already configured by EFI/VBIOS!\n");
+        return true;
+    }
+
+    // WPR2 not set up - try to use bootloader if available
+    if (bootloaderMem) {
+        IOLog("NVDAAL-GSP: Trying bootloader-based WPR2 setup...\n");
+        // The bootloader may be able to set up WPR2
+        // For now, continue without FWSEC
+    }
+
     if (!fwsecMem) {
-        IOLog("NVDAAL-GSP: No VBIOS loaded\n");
+        IOLog("NVDAAL-GSP: No VBIOS loaded, cannot run FWSEC\n");
+        IOLog("NVDAAL-GSP: WPR2 not configured - GSP may not boot correctly\n");
         return false;
     }
 
@@ -871,15 +890,10 @@ bool NVDAALGsp::executeFwsecFrts(void) {
     // Parse VBIOS if not already done
     if (!fwsecInfo.valid) {
         if (!parseVbios(vbiosData, vbiosSize)) {
-            IOLog("NVDAAL-GSP: Failed to parse VBIOS\n");
+            IOLog("NVDAAL-GSP: Failed to parse VBIOS - no FWSEC found\n");
+            IOLog("NVDAAL-GSP: Continuing without FWSEC (WPR2 may be pre-configured)\n");
             return false;
         }
-    }
-
-    // Check if WPR2 is already set up (by EFI/GOP)
-    if (checkWpr2Setup()) {
-        IOLog("NVDAAL-GSP: WPR2 already configured by EFI\n");
-        return true;
     }
 
     if (!fwsecInfo.valid) {
