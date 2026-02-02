@@ -29,6 +29,12 @@ public:
     bool loadFirmware(const std::string& path);
     bool loadFirmware(const void* data, size_t size);
 
+    // Boot sequence firmware (call before loadFirmware)
+    bool loadBooterLoad(const std::string& path);  // SEC2 booter firmware
+    bool loadBooterLoad(const void* data, size_t size);
+    bool loadVbios(const std::string& path);       // VBIOS for FWSEC
+    bool loadVbios(const void* data, size_t size);
+
     // Memory Management
     uint64_t allocVram(size_t size);
     bool submitCommand(uint32_t cmd);
