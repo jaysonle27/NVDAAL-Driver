@@ -36,6 +36,7 @@ public:
     IOReturn methodWaitSemaphore(IOExternalMethodArguments *args);
     IOReturn methodLoadBooterLoad(IOExternalMethodArguments *args);
     IOReturn methodLoadVbios(IOExternalMethodArguments *args);
+    IOReturn methodLoadBootloader(IOExternalMethodArguments *args);
 };
 
 // Method Selectors

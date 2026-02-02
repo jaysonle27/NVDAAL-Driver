@@ -62,6 +62,8 @@ IOReturn NVDAALUserClient::externalMethod(uint32_t selector, IOExternalMethodArg
             return methodLoadBooterLoad(arguments);
         case kNVDAALMethodLoadVbios:
             return methodLoadVbios(arguments);
+        case kNVDAALMethodLoadBootloader:
+            return methodLoadBootloader(arguments);
         default:
             return kIOReturnBadArgument;
     }
@@ -250,6 +252,51 @@ IOReturn NVDAALUserClient::methodLoadVbios(IOExternalMethodArguments *args) {
 
     void *kernelAddr = (void *)map->getVirtualAddress();
     bool ok = provider->loadVbios(kernelAddr, size);
+
+    map->release();
+    memDesc->complete(kIODirectionOut);
+    memDesc->release();
+
+    return ok ? kIOReturnSuccess : kIOReturnError;
+}
+
+IOReturn NVDAALUserClient::methodLoadBootloader(IOExternalMethodArguments *args) {
+    // Load GSP bootloader firmware (bootloader-ad102-570.144.bin)
+    // Input[0]: Pointer to bootloader data
+    // Input[1]: Size
+
+    if (args->scalarInputCount != 2) {
+        return kIOReturnBadArgument;
+    }
+
+    mach_vm_address_t userPtr = (mach_vm_address_t)args->scalarInput[0];
+    mach_vm_size_t size = (mach_vm_size_t)args->scalarInput[1];
+
+    IOLog("NVDAALUserClient: LoadBootloader. Ptr: 0x%llx, Size: %llu\n", userPtr, size);
+
+    if (size == 0 || size > 0x100000) {  // Max 1MB for bootloader
+        return kIOReturnBadArgument;
+    }
+
+    IOMemoryDescriptor *memDesc = IOMemoryDescriptor::withAddressRange(
+        userPtr, size, kIODirectionOut, clientTask);
+    if (!memDesc) return kIOReturnNoMemory;
+
+    IOReturn ret = memDesc->prepare(kIODirectionOut);
+    if (ret != kIOReturnSuccess) {
+        memDesc->release();
+        return ret;
+    }
+
+    IOMemoryMap *map = memDesc->map();
+    if (!map) {
+        memDesc->complete(kIODirectionOut);
+        memDesc->release();
+        return kIOReturnVMError;
+    }
+
+    void *kernelAddr = (void *)map->getVirtualAddress();
+    bool ok = provider->loadBootloader(kernelAddr, size);
 
     map->release();
     memDesc->complete(kIODirectionOut);
