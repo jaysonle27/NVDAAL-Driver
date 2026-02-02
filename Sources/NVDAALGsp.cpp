@@ -511,14 +511,13 @@ int NVDAALGsp::bootEx(void) {
     if (fwsecMem) {
         IOLog("NVDAAL-GSP: Step 2 - Execute FWSEC-FRTS\n");
         if (!executeFwsecFrts()) {
-            IOLog("NVDAAL-GSP: FWSEC-FRTS failed\n");
-            return -3;
+            IOLog("NVDAAL-GSP: FWSEC-FRTS failed - continuing in debug mode\n");
+            // Don't return error - try to continue anyway
         }
     } else {
         IOLog("NVDAAL-GSP: Step 2 - FWSEC not loaded, checking WPR2 status\n");
         if (!checkWpr2Setup()) {
-            IOLog("NVDAAL-GSP: WPR2 not set up and no FWSEC available\n");
-            // Try to continue anyway - maybe booter can handle it
+            IOLog("NVDAAL-GSP: WPR2 not set up - continuing in debug mode\n");
         }
     }
 
@@ -533,8 +532,8 @@ int NVDAALGsp::bootEx(void) {
     if (booterLoadMem) {
         IOLog("NVDAAL-GSP: Step 4 - Execute booter_load on SEC2\n");
         if (!executeBooterLoad()) {
-            IOLog("NVDAAL-GSP: booter_load execution failed\n");
-            return -5;
+            IOLog("NVDAAL-GSP: booter_load execution failed - trying direct start\n");
+            // Don't return error - try direct RISC-V start
         }
     } else {
         IOLog("NVDAAL-GSP: Step 4 - No booter_load, trying direct RISC-V start\n");
@@ -730,23 +729,71 @@ bool NVDAALGsp::executeBooterLoad(void) {
 bool NVDAALGsp::startRiscv(void) {
     IOLog("NVDAAL-GSP: Starting RISC-V core...\n");
 
+    // Debug: Scan for valid RISC-V registers
+    IOLog("NVDAAL-GSP: Scanning for RISC-V registers...\n");
+    
+    // Test different base addresses for GSP RISC-V
+    uint32_t testBases[] = {0x110000, 0x111000, 0x112000, 0x113000, 0x117000, 0x118000, 0x119000};
+    for (int i = 0; i < 7; i++) {
+        uint32_t base = testBases[i];
+        uint32_t val388 = readReg(base + 0x388);  // CPUCTL offset
+        uint32_t val100 = readReg(base + 0x100);  // Falcon CPUCTL offset
+        if (val388 != 0xbadf5620 && val388 != 0xffffffff) {
+            IOLog("NVDAAL-GSP: Found RISC-V at base 0x%06x: CPUCTL=0x%08x\n", base, val388);
+        }
+        if (val100 != 0xbadf5620 && val100 != 0xffffffff) {
+            IOLog("NVDAAL-GSP: Found Falcon at base 0x%06x: CPUCTL=0x%08x\n", base, val100);
+        }
+    }
+
+    // Read current state
+    uint32_t preCpuctl = readReg(NV_PRISCV_RISCV_CPUCTL);
+    uint32_t preBcrCtrl = readReg(NV_PRISCV_RISCV_BCR_CTRL);
+    IOLog("NVDAAL-GSP: Pre-start: CPUCTL=0x%08x BCR_CTRL=0x%08x\n", preCpuctl, preBcrCtrl);
+    IOLog("NVDAAL-GSP: WPR Meta @ 0x%llx, Radix3 @ 0x%llx\n", wprMetaPhys, radix3Phys);
+
     // Configure boot config register with WPR meta address
     uint32_t bcrAddr = (uint32_t)(wprMetaPhys >> 8);  // 256-byte aligned
+    IOLog("NVDAAL-GSP: Setting BCR_DMEM_ADDR=0x%08x\n", bcrAddr);
     writeReg(NV_PRISCV_RISCV_BCR_DMEM_ADDR, bcrAddr);
-    writeReg(NV_PRISCV_RISCV_BCR_CTRL, NV_PRISCV_RISCV_BCR_CTRL_VALID | bcrAddr);
+    
+    uint32_t bcrCtrlVal = NV_PRISCV_RISCV_BCR_CTRL_VALID | bcrAddr;
+    IOLog("NVDAAL-GSP: Setting BCR_CTRL=0x%08x\n", bcrCtrlVal);
+    writeReg(NV_PRISCV_RISCV_BCR_CTRL, bcrCtrlVal);
 
     // Start the core
+    IOLog("NVDAAL-GSP: Writing CPUCTL START command\n");
     writeReg(NV_PRISCV_RISCV_CPUCTL, NV_PRISCV_CPUCTL_START);
 
     // Wait for core to become active
     for (int i = 0; i < 100; i++) {
         uint32_t status = readReg(NV_PRISCV_RISCV_CPUCTL);
+        uint32_t retcode = readReg(NV_PRISCV_RISCV_BR_RETCODE);
+        
+        if (i == 0 || i == 10 || i == 50 || i == 99) {
+            IOLog("NVDAAL-GSP: [%d] CPUCTL=0x%08x BR_RETCODE=0x%08x\n", i, status, retcode);
+        }
+        
         if (status & NV_PRISCV_CPUCTL_ACTIVE) {
-            IOLog("NVDAAL-GSP: RISC-V core active\n");
+            IOLog("NVDAAL-GSP: RISC-V core active after %d iterations\n", i);
             return true;
         }
+        
+        // Check for error codes
+        if (retcode != 0 && retcode != 0xbadf5040) {
+            IOLog("NVDAAL-GSP: Boot error detected: BR_RETCODE=0x%08x at iteration %d\n", retcode, i);
+        }
+        
         IODelay(1000);  // 1ms delay
     }
+
+    // Final state dump
+    uint32_t finalCpuctl = readReg(NV_PRISCV_RISCV_CPUCTL);
+    uint32_t finalRetcode = readReg(NV_PRISCV_RISCV_BR_RETCODE);
+    uint32_t scratch14 = readReg(NV_PGC6_BSI_SECURE_SCRATCH_14);
+    uint32_t mailbox0 = readReg(NV_PGSP_FALCON_MAILBOX0);
+    IOLog("NVDAAL-GSP: Final: CPUCTL=0x%08x RETCODE=0x%08x SCRATCH14=0x%08x MB0=0x%08x\n",
+          finalCpuctl, finalRetcode, scratch14, mailbox0);
 
     IOLog("NVDAAL-GSP: RISC-V core failed to start\n");
     return false;
