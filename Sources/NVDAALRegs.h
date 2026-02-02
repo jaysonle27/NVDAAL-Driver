@@ -331,9 +331,22 @@ typedef struct {
 // VBIOS offset in GPU memory (BAR0)
 #define VBIOS_ROM_OFFSET              0x300000
 
-// FWSEC application IDs
-#define FWSEC_APP_ID_FRTS             0x01  // Firmware Runtime Services (WPR2 setup)
+// BIT (BIOS Information Table) constants
+#define BIT_HEADER_ID                 0xB8FF
+#define BIT_HEADER_SIGNATURE          0x00544942  // "BIT\0" little-endian
+#define BIT_TOKEN_FALCON_DATA         0x70
+#define BIT_TOKEN_CLOCK_PTRS          0x43  // 'C'
+#define BIT_TOKEN_NOP                 0x00
+
+// FWSEC application IDs (from PMU Lookup Table)
+#define FWSEC_APP_ID_FWSEC            0x85  // Main FWSEC app
+#define FWSEC_APP_ID_FRTS             0x01  // Firmware Runtime Services
 #define FWSEC_APP_ID_SB               0x02  // Secure Boot
+
+// DMEMMAPPER commands
+#define DMEMMAPPER_CMD_FRTS           0x15  // Execute FRTS
+#define DMEMMAPPER_CMD_SB             0x19  // Secure Boot
+#define DMEMMAPPER_SIGNATURE          0x50414D44  // "DMAP" little-endian
 
 // Falcon DMA transfer commands
 #define FALCON_DMA_CMD_READ           0x00000000
@@ -341,11 +354,157 @@ typedef struct {
 #define FALCON_DMA_CMD_IMEM           0x00000010
 #define FALCON_DMA_CMD_DMEM           0x00000000
 
-// DMEMMAPPER interface for FWSEC
-#define FWSEC_DMEM_FRTS_OFFSET        0x200  // Typical offset for FRTS cmd data
+// FWSEC error register
+#define NV_PBUS_SW_SCRATCH_0E         0x0000143C
 
 // Radix3 page table constants
 #define GSP_RADIX3_LEVELS             4  // 0, 1, 2, 3
+
+// ============================================================================
+// VBIOS Parsing Structures
+// ============================================================================
+
+#pragma pack(push, 1)
+
+// PCI Expansion ROM Header
+struct VbiosRomHeader {
+    uint16_t signature;       // 0x55AA
+    uint8_t  reserved[0x16];
+    uint16_t pciDataOffset;   // Offset to PCIR structure
+};
+
+// PCI Data Structure (PCIR)
+struct VbiosPcirHeader {
+    uint32_t signature;       // "PCIR"
+    uint16_t vendorId;
+    uint16_t deviceId;
+    uint16_t vpdOffset;
+    uint16_t length;
+    uint8_t  revision;
+    uint8_t  classCode[3];
+    uint16_t imageLength;     // In 512-byte units
+    uint16_t codeRevision;
+    uint8_t  codeType;        // 0=PCI, 3=EFI, 0xE0=FWSEC
+    uint8_t  indicator;       // Bit 7: last image
+    uint16_t maxRuntimeSize;
+};
+
+// NVIDIA PCI Data Extension (NPDE)
+struct VbiosNpdeHeader {
+    uint32_t signature;       // "NPDE"
+    uint16_t revision;
+    uint16_t length;
+    uint16_t subImageOffset;
+    uint8_t  subImageCount;
+    uint8_t  subImageIndex;
+    uint32_t imageLen;        // Actual image length
+    uint16_t lastImageInd;
+    uint8_t  flags;
+    uint8_t  reserved;
+};
+
+// BIT Header
+struct BitHeader {
+    uint16_t id;              // 0xB8FF
+    uint32_t signature;       // "BIT\0"
+    uint8_t  version;
+    uint8_t  headerSize;
+    uint8_t  tokenSize;
+    uint8_t  tokenCount;
+    uint8_t  flags;
+};
+
+// BIT Token Entry
+struct BitToken {
+    uint8_t  id;
+    uint8_t  dataVersion;
+    uint16_t dataSize;
+    uint16_t dataOffset;      // Offset from VBIOS base
+};
+
+// Falcon Data Token (BIT 0x70)
+struct BitFalconData {
+    uint32_t ucodeTableOffset;
+};
+
+// PMU Lookup Table Header
+struct PmuLookupTableHeader {
+    uint8_t  version;
+    uint8_t  headerSize;
+    uint8_t  entrySize;
+    uint8_t  entryCount;
+    uint16_t descSize;        // Version 2+ only
+};
+
+// PMU Lookup Table Entry (v3)
+struct PmuLookupEntry {
+    uint8_t  appId;
+    uint8_t  targetId;
+    uint32_t dataOffset;      // Offset to falcon ucode descriptor
+};
+
+// Falcon Ucode Descriptor (v3)
+struct FalconUcodeDescV3 {
+    uint8_t  version;
+    uint8_t  headerSize;
+    uint8_t  ucodeType;
+    uint8_t  reserved1;
+    uint32_t dataSize;
+    uint32_t imemOffset;
+    uint32_t imemSize;
+    uint32_t imemSecureSize;  // Portion to load as HS
+    uint32_t dmemOffset;
+    uint32_t dmemSize;
+    uint16_t engineId;
+    uint8_t  engineIdMask;
+    uint8_t  reserved2;
+    uint32_t sigOffset;       // RSA signature offset
+    uint32_t sigSize;
+    uint32_t patchLoc;
+    uint32_t patchSig;
+    uint32_t bootVec;
+    uint32_t flags;
+};
+
+// DMEMMAPPER Interface Structure
+struct DmemMapperHeader {
+    uint32_t signature;       // "DMAP"
+    uint16_t version;
+    uint16_t size;
+    uint32_t cmdBufOffset;
+    uint32_t cmdBufSize;
+    uint32_t dataBufOffset;
+    uint32_t dataBufSize;
+    uint32_t initCmd;         // Command to execute (patch with 0x15 for FRTS)
+    uint32_t reserved[8];
+};
+
+// FRTS Command Structure
+struct FrtsCmdRegion {
+    uint8_t  version;
+    uint8_t  regionType;      // 0 = FB (framebuffer)
+    uint16_t reserved;
+    uint32_t addrLo;          // Address >> 12
+    uint32_t addrHi;
+    uint32_t sizeLo;          // Size >> 12
+    uint32_t sizeHi;
+};
+
+// Extracted FWSEC Info
+struct FwsecInfo {
+    uint32_t imemOffset;
+    uint32_t imemSize;
+    uint32_t imemSecSize;
+    uint32_t dmemOffset;
+    uint32_t dmemSize;
+    uint32_t sigOffset;
+    uint32_t sigSize;
+    uint32_t bootVec;
+    uint32_t dmemMapperOffset;  // Offset of DMEMMAPPER in DMEM
+    bool     valid;
+};
+
+#pragma pack(pop)
 
 // ============================================================================
 // Compute Class Definitions

@@ -139,6 +139,11 @@ private:
     uint64_t wpr2Lo;
     uint64_t wpr2Hi;
 
+    // FWSEC info (extracted from VBIOS)
+    FwsecInfo fwsecInfo;
+    uint32_t fwsecImageOffset;  // Offset of FWSEC image in VBIOS
+    uint32_t fwsecImageSize;
+
     // Firmware info
     uint64_t firmwareSize;
     uint64_t firmwareCodeOffset;

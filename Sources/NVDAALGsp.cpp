@@ -39,6 +39,11 @@ NVDAALGsp::NVDAALGsp(void) {
 
     wpr2Lo = 0;
     wpr2Hi = 0;
+
+    // FWSEC info
+    memset(&fwsecInfo, 0, sizeof(fwsecInfo));
+    fwsecImageOffset = 0;
+    fwsecImageSize = 0;
 }
 
 NVDAALGsp::~NVDAALGsp(void) {
@@ -241,6 +246,239 @@ bool NVDAALGsp::loadVbios(const void *data, size_t size) {
     IOLog("NVDAAL-GSP: VBIOS loaded (%lu bytes) @ 0x%llx\n",
           (unsigned long)size, fwsecPhys);
 
+    return true;
+}
+
+// ============================================================================
+// VBIOS / FWSEC Parsing
+// ============================================================================
+
+bool NVDAALGsp::parseVbios(const void *vbios, size_t size) {
+    const uint8_t *data = (const uint8_t *)vbios;
+    
+    IOLog("NVDAAL-GSP: Parsing VBIOS (%lu bytes)...\n", (unsigned long)size);
+    
+    // Step 1: Find FWSEC image (type 0xE0) by scanning for 0x55AA signatures
+    uint32_t offset = 0;
+    uint32_t fwsecStart = 0;
+    uint32_t fwsecLen = 0;
+    int imageCount = 0;
+    
+    while (offset < size - 2) {
+        // Look for ROM signature at 512-byte boundaries
+        if ((offset & 0x1FF) == 0 && data[offset] == 0x55 && data[offset + 1] == 0xAA) {
+            const VbiosRomHeader *romHdr = (const VbiosRomHeader *)(data + offset);
+            
+            if (romHdr->pciDataOffset == 0 || offset + romHdr->pciDataOffset + sizeof(VbiosPcirHeader) > size) {
+                offset += 512;
+                continue;
+            }
+            
+            const VbiosPcirHeader *pcir = (const VbiosPcirHeader *)(data + offset + romHdr->pciDataOffset);
+            
+            // Verify PCIR signature
+            if (pcir->signature != 0x52494350) {  // "PCIR" little-endian
+                offset += 512;
+                continue;
+            }
+            
+            uint32_t imageLen = pcir->imageLength * 512;
+            
+            IOLog("NVDAAL-GSP: Found image %d at 0x%x: type=0x%02x, len=%u\n",
+                  imageCount, offset, pcir->codeType, imageLen);
+            
+            // Check if this is FWSEC image
+            if (pcir->codeType == VBIOS_IMAGE_TYPE_FWSEC) {
+                if (fwsecStart == 0) {
+                    fwsecStart = offset;
+                    fwsecLen = imageLen;
+                    IOLog("NVDAAL-GSP: Found first FWSEC image at 0x%x\n", fwsecStart);
+                }
+            }
+            
+            imageCount++;
+            
+            // Check if last image
+            if (pcir->indicator & 0x80) {
+                break;
+            }
+            
+            offset += imageLen;
+        } else {
+            offset += 512;
+        }
+    }
+    
+    if (fwsecStart == 0) {
+        IOLog("NVDAAL-GSP: No FWSEC image found in VBIOS\n");
+        return false;
+    }
+    
+    fwsecImageOffset = fwsecStart;
+    fwsecImageSize = fwsecLen;
+    
+    // Step 2: Find BIT header in VBIOS (usually in first image)
+    const uint8_t bitPattern[] = {0xFF, 0xB8, 'B', 'I', 'T', 0x00};
+    uint32_t bitOffset = 0;
+    
+    for (uint32_t i = 0; i < size - 6; i++) {
+        if (memcmp(data + i, bitPattern, 6) == 0) {
+            bitOffset = i;
+            break;
+        }
+    }
+    
+    if (bitOffset == 0) {
+        IOLog("NVDAAL-GSP: BIT header not found\n");
+        // Try to use FWSEC image directly without BIT parsing
+        fwsecInfo.valid = false;
+        return true;  // Continue anyway, we found FWSEC image
+    }
+    
+    IOLog("NVDAAL-GSP: Found BIT header at 0x%x\n", bitOffset);
+    
+    const BitHeader *bit = (const BitHeader *)(data + bitOffset);
+    
+    // Step 3: Scan BIT tokens for FALCON_DATA (0x70)
+    uint32_t tokenOffset = bitOffset + bit->headerSize;
+    uint32_t falconDataOffset = 0;
+    
+    for (int i = 0; i < bit->tokenCount && tokenOffset < size - sizeof(BitToken); i++) {
+        const BitToken *token = (const BitToken *)(data + tokenOffset);
+        
+        if (token->id == BIT_TOKEN_FALCON_DATA) {
+            falconDataOffset = token->dataOffset;
+            IOLog("NVDAAL-GSP: Found Falcon Data token at 0x%x\n", falconDataOffset);
+            break;
+        }
+        
+        tokenOffset += bit->tokenSize;
+    }
+    
+    if (falconDataOffset == 0) {
+        IOLog("NVDAAL-GSP: Falcon Data token not found in BIT\n");
+        fwsecInfo.valid = false;
+        return true;
+    }
+    
+    // Step 4: Read Falcon Data - points to PMU Lookup Table
+    if (falconDataOffset + sizeof(BitFalconData) > size) {
+        IOLog("NVDAAL-GSP: Invalid Falcon Data offset\n");
+        return false;
+    }
+    
+    const BitFalconData *falconData = (const BitFalconData *)(data + falconDataOffset);
+    uint32_t pmuTableOffset = falconData->ucodeTableOffset;
+    
+    IOLog("NVDAAL-GSP: PMU Lookup Table at 0x%x\n", pmuTableOffset);
+    
+    // Step 5: Parse PMU Lookup Table to find FWSEC ucode
+    if (pmuTableOffset + sizeof(PmuLookupTableHeader) > size) {
+        IOLog("NVDAAL-GSP: Invalid PMU table offset\n");
+        return false;
+    }
+    
+    const PmuLookupTableHeader *pmuHdr = (const PmuLookupTableHeader *)(data + pmuTableOffset);
+    
+    IOLog("NVDAAL-GSP: PMU Table: version=%d, entries=%d, entrySize=%d\n",
+          pmuHdr->version, pmuHdr->entryCount, pmuHdr->entrySize);
+    
+    uint32_t entryOffset = pmuTableOffset + pmuHdr->headerSize;
+    
+    for (int i = 0; i < pmuHdr->entryCount && entryOffset < size - pmuHdr->entrySize; i++) {
+        const PmuLookupEntry *entry = (const PmuLookupEntry *)(data + entryOffset);
+        
+        IOLog("NVDAAL-GSP: PMU Entry %d: appId=0x%02x, targetId=0x%02x, dataOff=0x%x\n",
+              i, entry->appId, entry->targetId, entry->dataOffset);
+        
+        // Look for FWSEC app (0x85) or any app that points to valid ucode
+        if (entry->appId == FWSEC_APP_ID_FWSEC || entry->appId == 0x01) {
+            uint32_t ucodeOffset = entry->dataOffset;
+            
+            // Adjust offset - may be relative to FWSEC image
+            if (ucodeOffset < fwsecStart) {
+                ucodeOffset += fwsecStart;
+            }
+            
+            if (ucodeOffset + sizeof(FalconUcodeDescV3) > size) {
+                continue;
+            }
+            
+            const FalconUcodeDescV3 *ucode = (const FalconUcodeDescV3 *)(data + ucodeOffset);
+            
+            IOLog("NVDAAL-GSP: Ucode Desc: imemOff=0x%x imemSz=0x%x dmemOff=0x%x dmemSz=0x%x\n",
+                  ucode->imemOffset, ucode->imemSize, ucode->dmemOffset, ucode->dmemSize);
+            
+            // Store FWSEC info
+            fwsecInfo.imemOffset = ucodeOffset + ucode->imemOffset;
+            fwsecInfo.imemSize = ucode->imemSize;
+            fwsecInfo.imemSecSize = ucode->imemSecureSize;
+            fwsecInfo.dmemOffset = ucodeOffset + ucode->dmemOffset;
+            fwsecInfo.dmemSize = ucode->dmemSize;
+            fwsecInfo.sigOffset = ucodeOffset + ucode->sigOffset;
+            fwsecInfo.sigSize = ucode->sigSize;
+            fwsecInfo.bootVec = ucode->bootVec;
+            fwsecInfo.valid = true;
+            
+            IOLog("NVDAAL-GSP: FWSEC extracted: IMEM=0x%x(%u) DMEM=0x%x(%u)\n",
+                  fwsecInfo.imemOffset, fwsecInfo.imemSize,
+                  fwsecInfo.dmemOffset, fwsecInfo.dmemSize);
+            
+            // Find DMEMMAPPER in DMEM
+            if (fwsecInfo.dmemOffset + fwsecInfo.dmemSize <= size) {
+                const uint8_t *dmem = data + fwsecInfo.dmemOffset;
+                for (uint32_t j = 0; j < fwsecInfo.dmemSize - 4; j += 4) {
+                    if (*(uint32_t *)(dmem + j) == DMEMMAPPER_SIGNATURE) {
+                        fwsecInfo.dmemMapperOffset = j;
+                        IOLog("NVDAAL-GSP: Found DMEMMAPPER at DMEM+0x%x\n", j);
+                        break;
+                    }
+                }
+            }
+            
+            break;
+        }
+        
+        entryOffset += pmuHdr->entrySize;
+    }
+    
+    if (!fwsecInfo.valid) {
+        IOLog("NVDAAL-GSP: Could not extract FWSEC ucode info\n");
+    }
+    
+    return true;
+}
+
+bool NVDAALGsp::loadFalconUcode(uint32_t falconBase, const void *imem, size_t imemSize,
+                                 const void *dmem, size_t dmemSize) {
+    const uint32_t *imemData = (const uint32_t *)imem;
+    const uint32_t *dmemData = (const uint32_t *)dmem;
+    
+    IOLog("NVDAAL-GSP: Loading Falcon ucode at 0x%x: IMEM=%lu DMEM=%lu\n",
+          falconBase, (unsigned long)imemSize, (unsigned long)dmemSize);
+    
+    // Load IMEM (instruction memory)
+    // Write to IMEMC to set address, then write data via IMEMD
+    for (size_t i = 0; i < imemSize; i += 4) {
+        if ((i % 256) == 0) {
+            // Set IMEM address (block = i/256, auto-increment enabled)
+            uint32_t imemcVal = ((i / 256) << 8) | (1 << 24);  // Auto-increment
+            writeReg(falconBase + FALCON_IMEMC(0), imemcVal);
+        }
+        writeReg(falconBase + FALCON_IMEMD(0), imemData[i / 4]);
+    }
+    
+    // Load DMEM (data memory)
+    for (size_t i = 0; i < dmemSize; i += 4) {
+        if ((i % 256) == 0) {
+            // Set DMEM address
+            uint32_t dmemcVal = ((i / 256) << 8) | (1 << 24);  // Auto-increment
+            writeReg(falconBase + FALCON_DMEMC(0), dmemcVal);
+        }
+        writeReg(falconBase + FALCON_DMEMD(0), dmemData[i / 4]);
+    }
+    
+    IOLog("NVDAAL-GSP: Falcon ucode loaded\n");
     return true;
 }
 
@@ -620,36 +858,115 @@ uint64_t NVDAALGsp::getWpr2Hi(void) {
 }
 
 bool NVDAALGsp::executeFwsecFrts(void) {
-    // Execute FWSEC-FRTS to set up WPR2 region
-    // This is a complex process that involves:
-    // 1. Loading FWSEC ucode from VBIOS
-    // 2. Configuring DMEMMAPPER interface
-    // 3. Running FWSEC in Heavy-Secure mode on GSP
-    // 4. Reading back WPR2 bounds
-
-    IOLog("NVDAAL-GSP: FWSEC-FRTS execution (simplified)...\n");
+    IOLog("NVDAAL-GSP: Executing FWSEC-FRTS...\n");
 
     if (!fwsecMem) {
-        IOLog("NVDAAL-GSP: No FWSEC/VBIOS loaded\n");
+        IOLog("NVDAAL-GSP: No VBIOS loaded\n");
         return false;
     }
 
-    // For now, just check if WPR2 got set up (may have been done by EFI)
-    // TODO: Full FWSEC implementation requires:
-    //   - Parsing VBIOS to find FWSEC partition
-    //   - Loading FWSEC ucode to GSP IMEM/DMEM
-    //   - Configuring FRTS command parameters
-    //   - Starting GSP in HS mode
-    //   - Waiting for completion
+    const uint8_t *vbiosData = (const uint8_t *)fwsecMem->getBytesNoCopy();
+    size_t vbiosSize = fwsecMem->getLength();
 
-    IODelay(1000);  // Small delay
+    // Parse VBIOS if not already done
+    if (!fwsecInfo.valid) {
+        if (!parseVbios(vbiosData, vbiosSize)) {
+            IOLog("NVDAAL-GSP: Failed to parse VBIOS\n");
+            return false;
+        }
+    }
 
+    // Check if WPR2 is already set up (by EFI/GOP)
     if (checkWpr2Setup()) {
-        IOLog("NVDAAL-GSP: FWSEC-FRTS: WPR2 is set up\n");
+        IOLog("NVDAAL-GSP: WPR2 already configured by EFI\n");
         return true;
     }
 
-    IOLog("NVDAAL-GSP: FWSEC-FRTS: WPR2 not set up after FWSEC\n");
+    if (!fwsecInfo.valid) {
+        IOLog("NVDAAL-GSP: FWSEC ucode not found in VBIOS\n");
+        return false;
+    }
+
+    // Step 1: Reset GSP Falcon
+    IOLog("NVDAAL-GSP: Resetting GSP Falcon for FWSEC...\n");
+    writeReg(NV_PGSP_FALCON_CPUCTL, 0);
+    IODelay(100);
+
+    // Step 2: Load FWSEC IMEM and DMEM into GSP Falcon
+    const void *imem = vbiosData + fwsecInfo.imemOffset;
+    const void *dmem = vbiosData + fwsecInfo.dmemOffset;
+
+    // Validate offsets
+    if (fwsecInfo.imemOffset + fwsecInfo.imemSize > vbiosSize ||
+        fwsecInfo.dmemOffset + fwsecInfo.dmemSize > vbiosSize) {
+        IOLog("NVDAAL-GSP: Invalid FWSEC offsets\n");
+        return false;
+    }
+
+    // Make a copy of DMEM to patch DMEMMAPPER
+    uint8_t *dmemCopy = (uint8_t *)IOMalloc(fwsecInfo.dmemSize);
+    if (!dmemCopy) {
+        IOLog("NVDAAL-GSP: Failed to allocate DMEM copy\n");
+        return false;
+    }
+    memcpy(dmemCopy, dmem, fwsecInfo.dmemSize);
+
+    // Step 3: Patch DMEMMAPPER to execute FRTS command
+    if (fwsecInfo.dmemMapperOffset > 0 && 
+        fwsecInfo.dmemMapperOffset + sizeof(DmemMapperHeader) <= fwsecInfo.dmemSize) {
+        DmemMapperHeader *mapper = (DmemMapperHeader *)(dmemCopy + fwsecInfo.dmemMapperOffset);
+        
+        IOLog("NVDAAL-GSP: Patching DMEMMAPPER: old initCmd=0x%x\n", mapper->initCmd);
+        mapper->initCmd = DMEMMAPPER_CMD_FRTS;  // 0x15
+        IOLog("NVDAAL-GSP: Patched DMEMMAPPER: new initCmd=0x%x\n", mapper->initCmd);
+    } else {
+        IOLog("NVDAAL-GSP: Warning: DMEMMAPPER not found, using DMEM as-is\n");
+    }
+
+    // Step 4: Load ucode into GSP Falcon
+    if (!loadFalconUcode(NV_PGSP_BASE, imem, fwsecInfo.imemSize, dmemCopy, fwsecInfo.dmemSize)) {
+        IOFree(dmemCopy, fwsecInfo.dmemSize);
+        IOLog("NVDAAL-GSP: Failed to load FWSEC ucode\n");
+        return false;
+    }
+
+    IOFree(dmemCopy, fwsecInfo.dmemSize);
+
+    // Step 5: Set boot vector and start Falcon
+    IOLog("NVDAAL-GSP: Starting FWSEC at boot vector 0x%x\n", fwsecInfo.bootVec);
+    writeReg(NV_PGSP_BASE + FALCON_BOOTVEC, fwsecInfo.bootVec);
+    writeReg(NV_PGSP_FALCON_CPUCTL, FALCON_CPUCTL_STARTCPU);
+
+    // Step 6: Wait for FWSEC completion
+    IOLog("NVDAAL-GSP: Waiting for FWSEC completion...\n");
+    for (int i = 0; i < 1000; i++) {  // 1 second timeout
+        uint32_t cpuctl = readReg(NV_PGSP_FALCON_CPUCTL);
+        uint32_t scratch0e = readReg(NV_PBUS_SW_SCRATCH_0E);
+        
+        if (cpuctl & FALCON_CPUCTL_HALTED) {
+            IOLog("NVDAAL-GSP: FWSEC halted, scratch0e=0x%08x\n", scratch0e);
+            
+            // Check for errors
+            if (scratch0e != 0 && scratch0e != 0xFFFFFFFF) {
+                IOLog("NVDAAL-GSP: FWSEC error: 0x%08x\n", scratch0e);
+            }
+            break;
+        }
+        
+        if (i == 100 || i == 500) {
+            IOLog("NVDAAL-GSP: FWSEC still running... cpuctl=0x%08x\n", cpuctl);
+        }
+        
+        IODelay(1000);  // 1ms
+    }
+
+    // Step 7: Check if WPR2 is now set up
+    if (checkWpr2Setup()) {
+        IOLog("NVDAAL-GSP: FWSEC-FRTS completed: WPR2 configured!\n");
+        return true;
+    }
+
+    IOLog("NVDAAL-GSP: FWSEC-FRTS: WPR2 still not configured\n");
     return false;
 }
 
