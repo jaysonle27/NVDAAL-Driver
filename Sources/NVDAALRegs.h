@@ -137,13 +137,42 @@
 #define NV_PRISCV_CPUCTL_START            (1 << 1)
 
 // ============================================================================
-// SEC2 (Security Engine 2)
+// SEC2 (Security Engine 2) - Runs Booter in Heavy-Secure mode
 // ============================================================================
 
 #define NV_PSEC_BASE                      0x00840000
 #define NV_PSEC_FALCON_CPUCTL             (NV_PSEC_BASE + FALCON_CPUCTL)
 #define NV_PSEC_FALCON_MAILBOX0           (NV_PSEC_BASE + FALCON_MAILBOX0)
 #define NV_PSEC_FALCON_MAILBOX1           (NV_PSEC_BASE + FALCON_MAILBOX1)
+#define NV_PSEC_FALCON_BOOTVEC            (NV_PSEC_BASE + FALCON_BOOTVEC)
+#define NV_PSEC_FALCON_HWCFG              (NV_PSEC_BASE + FALCON_HWCFG)
+#define NV_PSEC_FALCON_DMACTL             (NV_PSEC_BASE + FALCON_DMACTL)
+#define NV_PSEC_FALCON_DMATRFBASE         (NV_PSEC_BASE + FALCON_DMATRFBASE)
+#define NV_PSEC_FALCON_DMATRFMOFFS        (NV_PSEC_BASE + FALCON_DMATRFMOFFS)
+#define NV_PSEC_FALCON_DMATRFCMD          (NV_PSEC_BASE + FALCON_DMATRFCMD)
+#define NV_PSEC_FALCON_IMEMC(i)           (NV_PSEC_BASE + FALCON_IMEMC(i))
+#define NV_PSEC_FALCON_IMEMD(i)           (NV_PSEC_BASE + FALCON_IMEMD(i))
+#define NV_PSEC_FALCON_DMEMC(i)           (NV_PSEC_BASE + FALCON_DMEMC(i))
+#define NV_PSEC_FALCON_DMEMD(i)           (NV_PSEC_BASE + FALCON_DMEMD(i))
+
+// SEC2 RISC-V registers (Ada+)
+#define NV_PSEC_RISCV_CPUCTL              0x00841388
+#define NV_PSEC_RISCV_BR_RETCODE          0x00841400
+#define NV_PSEC_RISCV_BCR_CTRL            0x00841668
+#define NV_PSEC_RISCV_BCR_DMEM_ADDR       0x0084166C
+
+// ============================================================================
+// FWSEC / WPR2 Registers
+// ============================================================================
+
+#define NV_PFB_PRI_MMU_WPR2_ADDR_LO_VAL   0x001FA828  // WPR2 low address value
+#define NV_PGC6_BSI_SECURE_SCRATCH_14     0x00118F58  // Boot stage scratch
+
+// Boot stages for GSP
+#define BOOT_STAGE_3_HANDOFF              0x3
+
+// FWSEC error register
+#define NV_PBUS_VBIOS_SCRATCH_FWSEC_ERR   (NV_PBUS_VBIOS_SCRATCH + (0x15 * 4))
 
 // ============================================================================
 // Compute Engine (CE)
@@ -284,6 +313,34 @@ typedef struct {
 #define GSP_FW_SECTION_IMAGE          ".fwimage"
 #define GSP_FW_SECTION_SIG_AD10X      ".fwsignature_ad10x"
 #define GSP_FW_SECTION_SIG_GA10X      ".fwsignature_ga10x"
+
+// ============================================================================
+// VBIOS / FWSEC Structures
+// ============================================================================
+
+// VBIOS ROM header signature
+#define VBIOS_ROM_SIGNATURE           0xAA55
+
+// VBIOS image types
+#define VBIOS_IMAGE_TYPE_PCIAT        0x00  // PCI/AT BIOS
+#define VBIOS_IMAGE_TYPE_EFI          0x03  // UEFI GOP
+#define VBIOS_IMAGE_TYPE_FWSEC        0xE0  // FWSEC firmware
+
+// VBIOS offset in GPU memory (BAR0)
+#define VBIOS_ROM_OFFSET              0x300000
+
+// FWSEC application IDs
+#define FWSEC_APP_ID_FRTS             0x01  // Firmware Runtime Services (WPR2 setup)
+#define FWSEC_APP_ID_SB               0x02  // Secure Boot
+
+// Falcon DMA transfer commands
+#define FALCON_DMA_CMD_READ           0x00000000
+#define FALCON_DMA_CMD_WRITE          0x00000002
+#define FALCON_DMA_CMD_IMEM           0x00000010
+#define FALCON_DMA_CMD_DMEM           0x00000000
+
+// DMEMMAPPER interface for FWSEC
+#define FWSEC_DMEM_FRTS_OFFSET        0x200  // Typical offset for FRTS cmd data
 
 // Radix3 page table constants
 #define GSP_RADIX3_LEVELS             4  // 0, 1, 2, 3
