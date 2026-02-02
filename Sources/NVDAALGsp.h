@@ -67,12 +67,16 @@ public:
     // Firmware loading
     bool loadFirmware(const char *firmwarePath);
     bool loadBootloader(const void *data, size_t size);
+    bool loadBooterLoad(const void *data, size_t size);
+    bool loadVbios(const void *data, size_t size);
     bool parseElfFirmware(const void *data, size_t size);
 
     // Boot sequence
     bool boot(void);
+    int bootEx(void);  // Returns boot stage (0=success, negative=error)
     bool waitForInitDone(uint32_t timeoutMs = 5000);
     uint32_t getBootStatus(void) const;
+    bool hasBootloader(void) const { return bootloaderMem != nullptr; }
 
     // RPC primitives
     bool sendRpc(uint32_t function, const void *params, size_t size);
@@ -107,9 +111,11 @@ private:
     IOBufferMemoryDescriptor *cmdQueueMem;    // Command queue (host -> GSP)
     IOBufferMemoryDescriptor *statQueueMem;   // Status queue (GSP -> host)
     IOBufferMemoryDescriptor *firmwareMem;    // GSP firmware image
-    IOBufferMemoryDescriptor *bootloaderMem;  // Bootloader ucode
+    IOBufferMemoryDescriptor *bootloaderMem;  // Bootloader ucode (small secure booter)
+    IOBufferMemoryDescriptor *booterLoadMem;  // booter_load ucode for SEC2
     IOBufferMemoryDescriptor *wprMetaMem;     // WPR metadata
     IOBufferMemoryDescriptor *radix3Mem;      // Radix3 page table
+    IOBufferMemoryDescriptor *fwsecMem;       // FWSEC from VBIOS
 
     // Queue pointers
     volatile uint8_t *cmdQueue;
@@ -124,8 +130,14 @@ private:
     uint64_t statQueuePhys;
     uint64_t firmwarePhys;
     uint64_t bootloaderPhys;
+    uint64_t booterLoadPhys;
     uint64_t wprMetaPhys;
     uint64_t radix3Phys;
+    uint64_t fwsecPhys;
+
+    // WPR2 region (set by FWSEC-FRTS)
+    uint64_t wpr2Lo;
+    uint64_t wpr2Hi;
 
     // Firmware info
     uint64_t firmwareSize;
@@ -143,9 +155,23 @@ private:
     bool setupWprMeta(void);
 
     bool resetFalcon(void);
+    bool resetSec2(void);
     bool executeBootloader(void);
-    bool executeFwsec(void);
+    bool executeFwsecFrts(void);
+    bool executeFwsecSb(void);
+    bool executeBooterLoad(void);
     bool startRiscv(void);
+
+    // VBIOS / FWSEC helpers
+    bool parseVbios(const void *vbios, size_t size);
+    bool loadFwsecFromVbios(void);
+    bool loadFalconUcode(uint32_t falconBase, const void *imem, size_t imemSize,
+                         const void *dmem, size_t dmemSize);
+
+    // WPR2 status
+    bool checkWpr2Setup(void);
+    uint64_t getWpr2Lo(void);
+    uint64_t getWpr2Hi(void);
 
     uint32_t calcChecksum(const void *data, size_t size);
 
