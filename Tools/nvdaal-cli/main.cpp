@@ -13,6 +13,7 @@
 void print_usage(const char *prog) {
     std::cout << "Usage: " << prog << " <command> [args]\n";
     std::cout << "Commands:\n";
+    std::cout << "  status                Show GPU status (WPR2, GSP, SEC2 registers)\n";
     std::cout << "  boot <firmware_dir>   Full boot sequence with all firmwares\n";
     std::cout << "  load <firmware.bin>   Load GSP firmware only (legacy)\n";
     std::cout << "  test                  Verify VRAM allocation and Queue kicking\n";
@@ -27,6 +28,79 @@ void print_usage(const char *prog) {
 bool file_exists(const std::string& path) {
     std::ifstream f(path);
     return f.good();
+}
+
+int cmd_status() {
+    nvdaal::Client client;
+
+    if (!client.connect()) {
+        std::cerr << "[-] Error: Could not connect to driver." << std::endl;
+        return 1;
+    }
+
+    nvdaal::GpuStatus status;
+    if (!client.getStatus(&status)) {
+        std::cerr << "[-] Error: Could not get GPU status." << std::endl;
+        return 1;
+    }
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "         NVDAAL GPU Status" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << std::hex << std::uppercase;
+
+    // Chip Info
+    uint32_t arch = (status.pmcBoot0 >> 20) & 0x1F;
+    std::cout << "\n[Chip Info]" << std::endl;
+    std::cout << "  PMC_BOOT_0:       0x" << status.pmcBoot0 << std::endl;
+    std::cout << "  Architecture:     0x" << arch;
+    if (arch == 0x19) std::cout << " (Ada Lovelace)";
+    else if (arch == 0x17) std::cout << " (Ampere)";
+    std::cout << std::endl;
+
+    // WPR2 Status (CRITICAL for GSP boot)
+    std::cout << "\n[WPR2 Status]" << std::endl;
+    std::cout << "  WPR2_ADDR_LO:     0x" << status.wpr2Lo << std::endl;
+    std::cout << "  WPR2_ADDR_HI:     0x" << status.wpr2Hi << std::endl;
+    std::cout << "  WPR2 Enabled:     " << (status.wpr2Enabled ? "YES" : "NO") << std::endl;
+
+    if (status.wpr2Enabled) {
+        // Calculate WPR2 region
+        uint64_t wpr2Start = ((uint64_t)(status.wpr2Lo & 0xFFFFF000)) << 8;
+        uint64_t wpr2End = ((uint64_t)(status.wpr2Hi & 0xFFFFFFFE)) << 8;
+        std::cout << "  WPR2 Region:      0x" << wpr2Start << " - 0x" << wpr2End << std::endl;
+        std::cout << "  --> WPR2 is CONFIGURED (FWSEC/EFI did its job)" << std::endl;
+    } else {
+        std::cout << "  --> WPR2 NOT configured (need FWSEC-FRTS or EFI)" << std::endl;
+    }
+
+    // GSP RISC-V Status
+    std::cout << "\n[GSP RISC-V]" << std::endl;
+    std::cout << "  CPUCTL:           0x" << status.gspRiscvCpuctl << std::endl;
+    bool gspHalted = (status.gspRiscvCpuctl >> 4) & 1;
+    bool gspActive = (status.gspRiscvCpuctl >> 7) & 1;
+    std::cout << "  Halted:           " << (gspHalted ? "YES" : "NO") << std::endl;
+    std::cout << "  Active:           " << (gspActive ? "YES" : "NO") << std::endl;
+
+    // SEC2 RISC-V Status
+    std::cout << "\n[SEC2 RISC-V]" << std::endl;
+    std::cout << "  CPUCTL:           0x" << status.sec2RiscvCpuctl << std::endl;
+    bool sec2Halted = (status.sec2RiscvCpuctl >> 4) & 1;
+    std::cout << "  Halted:           " << (sec2Halted ? "YES" : "NO") << std::endl;
+
+    // GSP Falcon Mailboxes
+    std::cout << "\n[GSP Falcon Mailbox]" << std::endl;
+    std::cout << "  MAILBOX0:         0x" << status.gspFalconMailbox0 << std::endl;
+    std::cout << "  MAILBOX1:         0x" << status.gspFalconMailbox1 << std::endl;
+
+    // Boot Scratch
+    std::cout << "\n[Boot Info]" << std::endl;
+    std::cout << "  SCRATCH_14:       0x" << status.bootScratch << std::endl;
+
+    std::cout << std::dec << std::nouppercase;
+    std::cout << "\n========================================" << std::endl;
+
+    return 0;
 }
 
 int cmd_boot(const std::string& firmwareDir) {
@@ -158,7 +232,9 @@ int main(int argc, char *argv[]) {
 
     std::string command = argv[1];
 
-    if (command == "boot") {
+    if (command == "status") {
+        return cmd_status();
+    } else if (command == "boot") {
         if (argc < 3) {
             std::cerr << "Error: Missing firmware directory path" << std::endl;
             print_usage(argv[0]);
