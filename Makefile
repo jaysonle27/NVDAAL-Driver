@@ -16,15 +16,16 @@ OBJECTS = $(BUILD_DIR)/NVDAAL.o $(BUILD_DIR)/NVDAALGsp.o $(BUILD_DIR)/NVDAALUser
 
 # Compilador e Flags
 SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)
+ARCH ?= $(shell uname -m)
 CXX = xcrun -sdk macosx clang++
-CXXFLAGS = -x c++ -std=c++17 -arch arm64 -fno-builtin -fno-exceptions -fno-rtti -mkernel \
+CXXFLAGS = -x c++ -std=c++17 -arch $(ARCH) -fno-builtin -fno-exceptions -fno-rtti -mkernel \
 	-DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
 	-Wno-deprecated-declarations -Wno-inconsistent-missing-override -Wno-shadow \
 	-I$(SDKROOT)/System/Library/Frameworks/Kernel.framework/Headers \
 	-I$(SDKROOT)/System/Library/Frameworks/IOKit.framework/Headers \
 	-I./Sources
 
-LDFLAGS = -Xlinker -kext -nostdlib -lkmod -r -arch arm64
+LDFLAGS = -arch $(ARCH) -static -Xlinker -kext -nostdlib -lkmod -lcc_kext
 
 # =============================================================================
 # Targets
