@@ -24,6 +24,9 @@
 #include <Guid/FileInfo.h>
 #include <IndustryStandard/Pci.h>
 
+// FWSEC implementation header
+#include "fwsec.h"
+
 //=============================================================================
 // Constants
 //=============================================================================
@@ -2089,8 +2092,10 @@ NvdaalFwsecMain (
 
   LogPrint (L"\n");
   LogPrint (L"============================================\n");
-  LogPrint (L"  NVDAAL FWSEC Executor v0.6\n");
+  LogPrint (L"  NVDAAL FWSEC Executor v0.7\n");
   LogPrint (L"  For NVIDIA Ada Lovelace GPUs\n");
+  LogPrint (L"  + NVIDIA-based FWSEC implementation\n");
+  LogPrint (L"  + Proper fuse version & signature\n");
   LogPrint (L"  + BROM Interface (DMA-based HS mode)\n");
   LogPrint (L"  + File Logging to EFI partition\n");
   LogPrint (L"============================================\n\n");
@@ -2249,13 +2254,37 @@ NvdaalFwsecMain (
   }
 
   //=========================================================================
-  // METHOD 3: Direct FWSEC Execution (last resort, will fail on HS mode)
+  // METHOD 3: New Professional FWSEC Implementation
+  // Based on NVIDIA open-gpu-kernel-modules (kernel_gsp_frts_tu102.c)
   //=========================================================================
-  LogPrint (L"\n*** METHOD 3: Direct FWSEC Execution (last resort) ***\n");
-  LogPrint (L"Note: This bypasses Boot ROM and will fail HS signature check\n\n");
+  LogPrint (L"\n*** METHOD 3: Professional FWSEC-FRTS Implementation ***\n");
+  LogPrint (L"Using NVIDIA-based implementation with proper signature patching\n\n");
 
-  // Execute FWSEC-FRTS (direct load)
-  Status = ExecuteFwsecFrts (VbiosData, VbiosSize);
+  {
+    // Calculate FRTS offset at top of VRAM (1MB from end)
+    // Read usable FB size from register
+    UINT32 FbSizeMb = ReadReg (0x00100A10);  // NV_USABLE_FB_SIZE_IN_MB
+    UINT64 FrtsOffset;
+
+    if (FbSizeMb == 0 || FbSizeMb == 0xFFFFFFFF || FbSizeMb > 64 * 1024) {
+      // Default to 24GB - 1MB for RTX 4090 if register unavailable
+      FbSizeMb = 24 * 1024;
+      LogPrint (L"NVDAAL: Using default FB size: %u MB\n", FbSizeMb);
+    } else {
+      LogPrint (L"NVDAAL: FB size from register: %u MB\n", FbSizeMb);
+    }
+
+    FrtsOffset = ((UINT64)FbSizeMb << 20) - 0x100000;  // FB_SIZE - 1MB
+    LogPrint (L"NVDAAL: FRTS offset: 0x%llX\n", FrtsOffset);
+
+    // Execute FWSEC-FRTS using new professional implementation
+    Status = FwsecExecuteFrts (
+      (UINT32)(UINTN)mMmioBase,  // BAR0 address
+      VbiosData,
+      VbiosSize,
+      FrtsOffset
+      );
+  }
 
   FreePool (VbiosData);
 
@@ -2275,7 +2304,7 @@ NvdaalFwsecMain (
     LogPrint (L"  All methods attempted:\n");
     LogPrint (L"  1. Power Cycle - FAILED\n");
     LogPrint (L"  2. BROM Interface - FAILED\n");
-    LogPrint (L"  3. Direct Load - FAILED (expected)\n");
+    LogPrint (L"  3. Professional FWSEC - FAILED\n");
     LogPrint (L"\n");
     LogPrint (L"  The GPU's Boot ROM requires NVIDIA's\n");
     LogPrint (L"  cryptographic signature to execute\n");

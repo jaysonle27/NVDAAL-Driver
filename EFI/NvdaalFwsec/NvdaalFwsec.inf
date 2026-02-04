@@ -1,7 +1,11 @@
 ## @file
 #  NVDAAL FWSEC Executor Driver
 #
-#  Copyright (c) 2024, NVDAAL Project. All rights reserved.
+#  Based on NVIDIA open-gpu-kernel-modules implementation:
+#    - kernel_gsp_frts_tu102.c (FRTS command structure)
+#    - kernel_gsp_fwsec.c (VBIOS parsing and ucode extraction)
+#
+#  Copyright (c) 2024-2025, Gabriel Maia / NVDAAL Project. All rights reserved.
 #  SPDX-License-Identifier: MIT
 ##
 
@@ -10,11 +14,15 @@
   BASE_NAME                      = NvdaalFwsec
   FILE_GUID                      = 2B3E4567-8901-4DEF-ABCD-EF0123456789
   MODULE_TYPE                    = UEFI_DRIVER
-  VERSION_STRING                 = 0.1
+  VERSION_STRING                 = 0.7
   ENTRY_POINT                    = NvdaalFwsecMain
 
 [Sources]
   NvdaalFwsec.c
+  fwsec_impl.c
+  fwsec.h
+  falcon.h
+  vbios.h
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -28,6 +36,7 @@
   BaseMemoryLib
   DebugLib
   IoLib
+  PrintLib
 
 [Protocols]
   gEfiPciIoProtocolGuid          ## CONSUMES

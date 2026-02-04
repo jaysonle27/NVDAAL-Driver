@@ -1,89 +1,186 @@
 /**
  * @file fwsec_impl.c
- * @brief FWSEC implementation for NVDAAL EFI driver
+ * @brief FWSEC-FRTS implementation for NVIDIA Ada Lovelace GPUs
  *
- * This implements the FWSEC extraction and execution sequence
- * similar to Linux nova-core driver.
+ * Complete implementation based on NVIDIA open-gpu-kernel-modules:
+ *   - kernel_gsp_frts_tu102.c (FRTS command structure and execution)
+ *   - kernel_gsp_fwsec.c (VBIOS parsing and ucode extraction)
+ *
+ * Copyright (c) 2024-2025 Gabriel Maia / NVDAAL Project
+ * SPDX-License-Identifier: MIT
  */
 
 #include <Uefi.h>
 #include <Library/UefiLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/MemoryAllocationLib.h>
-#include <Library/IoLib.h>
 
-#include "vbios.h"
 #include "fwsec.h"
 #include "falcon.h"
+#include "vbios.h"
 
-//
-// Debug logging macro
-//
-#define FWSEC_LOG(fmt, ...) \
-    Print(L"NVDAAL-FWSEC: " fmt L"\n", ##__VA_ARGS__)
+//==============================================================================
+// Debug Logging
+//==============================================================================
 
-#define FWSEC_DEBUG(fmt, ...) \
-    Print(L"NVDAAL-FWSEC: [DBG] " fmt L"\n", ##__VA_ARGS__)
+#define LOG(fmt, ...)       Print(L"NVDAAL: " fmt L"\n", ##__VA_ARGS__)
+#define LOG_DBG(fmt, ...)   Print(L"NVDAAL: [DBG] " fmt L"\n", ##__VA_ARGS__)
+#define LOG_ERR(fmt, ...)   Print(L"NVDAAL: [ERR] " fmt L"\n", ##__VA_ARGS__)
 
-//
+//==============================================================================
 // Constants
-//
-#define FRTS_SIZE               SIZE_1MB
-#define FRTS_ALIGN              SIZE_1MB
-#define VGA_WORKSPACE_SIZE      SIZE_256KB
-
-#define DMA_TIMEOUT_US          1000000     // 1 second
-#define GFW_BOOT_TIMEOUT_US     2000000     // 2 seconds
-#define FALCON_HALT_TIMEOUT_US  5000000     // 5 seconds
-
-//==============================================================================
-// VBIOS Parsing Implementation
 //==============================================================================
 
-EFI_STATUS
-VbiosInit (
-    OUT VBIOS_CONTEXT   *Context,
-    IN  UINT8           *RomData,
-    IN  UINTN           RomSize
+// BIT Header
+#define FWSEC_BIT_HEADER_ID         0xB8FF
+#define FWSEC_BIT_SIGNATURE         0x00544942  // "BIT\0"
+
+// BIT Token IDs (local to avoid conflicts)
+#define FWSEC_TOKEN_FALCON_DATA     0x70
+#define FWSEC_TOKEN_BIOSDATA        0x42
+
+// PMU Application IDs
+#define PMU_APPID_FWSEC_PROD        0x85
+#define PMU_APPID_FWSEC_DBG         0x45
+#define PMU_APPID_FW_SEC_LIC        0x05
+
+// Falcon Registers (local copies for self-contained module)
+#define FWSEC_GSP_BASE              0x00110000
+#define FWSEC_FALCON_CPUCTL         0x0100
+#define FWSEC_FALCON_BOOTVEC        0x0104
+#define FWSEC_FALCON_IMEMC(i)       (0x0180 + (i) * 16)
+#define FWSEC_FALCON_IMEMD(i)       (0x0184 + (i) * 16)
+#define FWSEC_FALCON_DMEMC(i)       (0x01C0 + (i) * 8)
+#define FWSEC_FALCON_DMEMD(i)       (0x01C4 + (i) * 8)
+
+#define FWSEC_CPUCTL_STARTCPU       (1 << 1)
+#define FWSEC_CPUCTL_HALTED         (1 << 4)
+#define FWSEC_MEM_AINCW             (1 << 24)
+
+// WPR2 Registers
+#define FWSEC_WPR2_ADDR_LO          0x001FA820
+#define FWSEC_WPR2_ADDR_HI          0x001FA824
+
+// Timeouts
+#define FWSEC_HALT_TIMEOUT_US       5000000  // 5 seconds
+
+//==============================================================================
+// Local BIT/VBIOS Structures (renamed to avoid conflicts with vbios.h)
+//==============================================================================
+
+#pragma pack(push, 1)
+
+typedef struct {
+    UINT16  Id;             // 0xB8FF
+    UINT32  Signature;      // "BIT\0"
+    UINT16  BcdVersion;
+    UINT8   HeaderSize;
+    UINT8   TokenSize;
+    UINT8   TokenEntries;
+    UINT8   HeaderChksum;
+} FWSEC_BIT_HDR;
+
+typedef struct {
+    UINT8   TokenId;
+    UINT8   DataVersion;
+    UINT16  DataSize;
+    UINT32  DataPtr;
+} FWSEC_BIT_TOK;
+
+typedef struct {
+    UINT32  FalconUcodeTablePtr;
+} FWSEC_FALCON_DATA;
+
+typedef struct {
+    UINT8   Version;
+    UINT8   HeaderSize;
+    UINT8   EntrySize;
+    UINT8   EntryCount;
+    UINT8   DescVersion;
+    UINT8   DescSize;
+} FWSEC_PMU_HDR;
+
+typedef struct {
+    UINT8   ApplicationId;
+    UINT8   TargetId;
+    UINT32  DescPtr;
+} FWSEC_PMU_ENTRY;
+
+#pragma pack(pop)
+
+//==============================================================================
+// FwsecReadFuseVersion
+// Based on kgspReadUcodeFuseVersion_HAL
+//==============================================================================
+
+UINT32
+FwsecReadFuseVersion (
+    IN  UINT32  Bar0,
+    IN  UINT8   UcodeId
     )
 {
-    if (Context == NULL || RomData == NULL || RomSize == 0) {
-        return EFI_INVALID_PARAMETER;
+    UINT32  FuseReg;
+    UINT32  FuseVal;
+    UINT32  Version;
+
+    // UcodeId is 1-based, validate range
+    if (UcodeId == 0 || UcodeId > 16) {
+        LOG_DBG(L"Invalid UcodeId %d, using version 0", UcodeId);
+        return 0;
     }
 
-    ZeroMem(Context, sizeof(VBIOS_CONTEXT));
-    Context->RomData = RomData;
-    Context->RomSize = RomSize;
+    // Calculate fuse register address
+    // Each ucode has its own fuse register at 4-byte intervals
+    FuseReg = NV_FUSE_OPT_FPF_GSP_UCODE1_VERSION + ((UINT32)(UcodeId - 1) * 4);
 
-    return EFI_SUCCESS;
+    FuseVal = GpuRead32(Bar0, FuseReg);
+    LOG_DBG(L"Fuse register 0x%X = 0x%X", FuseReg, FuseVal);
+
+    if (FuseVal == 0) {
+        return 0;
+    }
+
+    // Find highest bit set (fuse version is encoded as bitmask)
+    Version = 0;
+    while (FuseVal >>= 1) {
+        Version++;
+    }
+
+    LOG_DBG(L"UcodeId %d: fuse version = %d", UcodeId, Version + 1);
+    return Version + 1;
 }
 
-EFI_STATUS
-VbiosFindRomBase (
-    IN  VBIOS_CONTEXT   *Context,
-    OUT UINT32          *RomBase
+//==============================================================================
+// FindBitHeader - Find BIT header in VBIOS
+//==============================================================================
+
+static EFI_STATUS
+FindBitHeader (
+    IN  UINT8   *VbiosData,
+    IN  UINTN   VbiosSize,
+    OUT UINT32  *BitOffset
     )
 {
     UINT32  Offset;
-    UINT16  Signature;
-    UINT16  PcirOffset;
+    UINT16  Id;
+    UINT32  Sig;
 
-    // Search for ROM signature (0x55AA)
-    for (Offset = 0; Offset < Context->RomSize - 0x20; Offset += 0x100) {
-        Signature = *(UINT16 *)(Context->RomData + Offset);
-        if (Signature == VBIOS_ROM_SIGNATURE) {
-            // Verify PCIR structure
-            PcirOffset = *(UINT16 *)(Context->RomData + Offset + 0x18);
-            if (PcirOffset > 0 && Offset + PcirOffset + 24 < Context->RomSize) {
-                UINT32 PcirSig = *(UINT32 *)(Context->RomData + Offset + PcirOffset);
-                if (PcirSig == VBIOS_PCIR_SIGNATURE) {
-                    UINT8 CodeType = *(Context->RomData + Offset + PcirOffset + 0x14);
-                    if (CodeType == PCIR_CODE_TYPE_X86) {
-                        Context->RomBase = Offset;
-                        *RomBase = Offset;
-                        FWSEC_DEBUG(L"Found ROM base at 0x%X", Offset);
-                        return EFI_SUCCESS;
-                    }
+    // Search for BIT header pattern: 0xFFB8 followed by "BIT\0"
+    for (Offset = 0; Offset < VbiosSize - 12; Offset++) {
+        Id = *(UINT16 *)(VbiosData + Offset);
+        if (Id == FWSEC_BIT_HEADER_ID) {
+            Sig = *(UINT32 *)(VbiosData + Offset + 2);
+            if (Sig == FWSEC_BIT_SIGNATURE) {
+                // Verify checksum
+                FWSEC_BIT_HDR *Hdr = (FWSEC_BIT_HDR *)(VbiosData + Offset);
+                UINT8 Sum = 0;
+                for (UINT32 i = 0; i < Hdr->HeaderSize; i++) {
+                    Sum += VbiosData[Offset + i];
+                }
+                if ((Sum & 0xFF) == 0) {
+                    *BitOffset = Offset;
+                    LOG_DBG(L"Found BIT header at 0x%X", Offset);
+                    return EFI_SUCCESS;
                 }
             }
         }
@@ -92,800 +189,673 @@ VbiosFindRomBase (
     return EFI_NOT_FOUND;
 }
 
-EFI_STATUS
-VbiosFindBitHeader (
-    IN  VBIOS_CONTEXT   *Context
+//==============================================================================
+// FindFwsecDescriptor - Parse BIT to find FWSEC ucode descriptor
+//==============================================================================
+
+static EFI_STATUS
+FindFwsecDescriptor (
+    IN  UINT8               *VbiosData,
+    IN  UINTN               VbiosSize,
+    IN  UINT32              BitOffset,
+    IN  UINT32              ExpansionRomOffset,
+    OUT FALCON_UCODE_DESC_V3 *OutDesc,
+    OUT UINT32              *OutDescOffset,
+    OUT UINT32              *OutDescSize
     )
 {
-    UINT32  Offset;
-    UINT32  EndOffset;
+    FWSEC_BIT_HDR   *BitHdr;
+    UINT8           *TokenPtr;
+    UINT32          TokenOffset;
+    UINT32          i;
 
-    if (Context->RomBase == 0) {
-        return EFI_NOT_READY;
-    }
+    BitHdr = (FWSEC_BIT_HDR *)(VbiosData + BitOffset);
+    TokenOffset = BitOffset + BitHdr->HeaderSize;
 
-    // Search for BIT signature within ROM area
-    EndOffset = Context->RomBase + 0x10000;  // Search 64KB
-    if (EndOffset > Context->RomSize) {
-        EndOffset = (UINT32)Context->RomSize;
-    }
+    // Iterate through BIT tokens
+    for (i = 0; i < BitHdr->TokenEntries; i++) {
+        FWSEC_BIT_TOK *Token = (FWSEC_BIT_TOK *)(VbiosData + TokenOffset);
 
-    for (Offset = Context->RomBase; Offset < EndOffset - 12; Offset++) {
-        // Check for "BIT" signature (with 0xFFB8 prefix or direct)
-        if (CompareMem(Context->RomData + Offset, "BIT", 3) == 0) {
-            BIT_HEADER *Hdr = (BIT_HEADER *)(Context->RomData + Offset - 2);
+        // Look for FALCON_DATA token (0x70)
+        if (Token->TokenId == FWSEC_TOKEN_FALCON_DATA &&
+            Token->DataVersion == 2 &&
+            Token->DataSize >= 4) {
 
-            // Validate header
-            if (Hdr->HeaderSize > 0 && Hdr->HeaderSize < 32 &&
-                Hdr->TokenSize >= 6 && Hdr->TokenSize <= 12 &&
-                Hdr->TokenCount > 0 && Hdr->TokenCount < 64) {
+            FWSEC_FALCON_DATA *FalconData;
+            FWSEC_PMU_HDR *PmuHdr;
+            UINT32 PmuTableOffset;
+            UINT32 j;
 
-                Context->BitHeader = Hdr;
-                Context->BitTokens = (BIT_TOKEN *)(Context->RomData + Offset + 2 + Hdr->HeaderSize);
-                Context->BitTokenCount = Hdr->TokenCount;
+            FalconData = (FWSEC_FALCON_DATA *)(VbiosData + Token->DataPtr);
+            PmuTableOffset = ExpansionRomOffset + FalconData->FalconUcodeTablePtr;
 
-                FWSEC_DEBUG(L"Found BIT at 0x%X, %d tokens", Offset, Hdr->TokenCount);
-                return EFI_SUCCESS;
+            if (PmuTableOffset + sizeof(FWSEC_PMU_HDR) > VbiosSize) {
+                LOG_ERR(L"PMU table offset out of bounds");
+                goto next_token;
+            }
+
+            PmuHdr = (FWSEC_PMU_HDR *)(VbiosData + PmuTableOffset);
+
+            // Validate PMU header
+            if (PmuHdr->Version != 1 || PmuHdr->HeaderSize < 6 ||
+                PmuHdr->EntrySize < 6 || PmuHdr->EntryCount == 0) {
+                LOG_ERR(L"Invalid PMU table header");
+                goto next_token;
+            }
+
+            LOG_DBG(L"PMU table at 0x%X: %d entries", PmuTableOffset, PmuHdr->EntryCount);
+
+            // Search for FWSEC_PROD entry
+            for (j = 0; j < PmuHdr->EntryCount; j++) {
+                FWSEC_PMU_ENTRY *Entry = (FWSEC_PMU_ENTRY *)(
+                    VbiosData + PmuTableOffset + PmuHdr->HeaderSize + j * PmuHdr->EntrySize);
+
+                if (Entry->ApplicationId == PMU_APPID_FWSEC_PROD ||
+                    Entry->ApplicationId == PMU_APPID_FW_SEC_LIC) {
+
+                    UINT32 DescOffset = ExpansionRomOffset + Entry->DescPtr;
+                    UINT32 VDescVal;
+                    UINT8 DescVersion;
+                    UINT32 DescSize;
+
+                    if (DescOffset + 4 > VbiosSize) {
+                        continue;
+                    }
+
+                    // Read VDesc to get version and size
+                    VDescVal = *(UINT32 *)(VbiosData + DescOffset);
+
+                    // Check version availability flag
+                    if ((VDescVal & VDESC_FLAGS_VERSION_BIT) == 0) {
+                        continue;
+                    }
+
+                    DescVersion = (UINT8)((VDescVal & VDESC_VERSION_MASK) >> VDESC_VERSION_SHIFT);
+                    DescSize = (VDescVal & VDESC_SIZE_MASK) >> VDESC_SIZE_SHIFT;
+
+                    LOG_DBG(L"Found FWSEC: app=0x%02X, desc v%d, size=%d at 0x%X",
+                            Entry->ApplicationId, DescVersion, DescSize, DescOffset);
+
+                    // We need V3 descriptor for Ada Lovelace
+                    if (DescVersion == FALCON_UCODE_DESC_VERSION_V3 &&
+                        DescSize >= FALCON_UCODE_DESC_V3_SIZE) {
+
+                        if (DescOffset + FALCON_UCODE_DESC_V3_SIZE > VbiosSize) {
+                            continue;
+                        }
+
+                        CopyMem(OutDesc, VbiosData + DescOffset, FALCON_UCODE_DESC_V3_SIZE);
+                        *OutDescOffset = DescOffset;
+                        *OutDescSize = DescSize;
+
+                        LOG_DBG(L"FWSEC V3 descriptor:");
+                        LOG_DBG(L"  StoredSize: 0x%X", OutDesc->StoredSize);
+                        LOG_DBG(L"  PKCDataOffset: 0x%X", OutDesc->PKCDataOffset);
+                        LOG_DBG(L"  InterfaceOffset: 0x%X", OutDesc->InterfaceOffset);
+                        LOG_DBG(L"  IMEM: base=0x%X size=0x%X", OutDesc->IMEMPhysBase, OutDesc->IMEMLoadSize);
+                        LOG_DBG(L"  DMEM: base=0x%X size=0x%X", OutDesc->DMEMPhysBase, OutDesc->DMEMLoadSize);
+                        LOG_DBG(L"  UcodeId: %d, SigCount: %d, SigVersions: 0x%04X",
+                                OutDesc->UcodeId, OutDesc->SignatureCount, OutDesc->SignatureVersions);
+
+                        return EFI_SUCCESS;
+                    }
+                }
             }
         }
+
+next_token:
+        TokenOffset += BitHdr->TokenSize;
     }
 
     return EFI_NOT_FOUND;
-}
-
-EFI_STATUS
-VbiosGetBitToken (
-    IN  VBIOS_CONTEXT   *Context,
-    IN  UINT8           TokenId,
-    OUT BIT_TOKEN       **Token
-    )
-{
-    UINT32  i;
-    UINT8   *TokenPtr;
-
-    if (Context->BitHeader == NULL || Context->BitTokens == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    TokenPtr = (UINT8 *)Context->BitTokens;
-
-    for (i = 0; i < Context->BitTokenCount; i++) {
-        BIT_TOKEN *Tok = (BIT_TOKEN *)TokenPtr;
-        if (Tok->Id == TokenId) {
-            *Token = Tok;
-            return EFI_SUCCESS;
-        }
-        if (Tok->Id == 0) {
-            break;  // End of tokens
-        }
-        TokenPtr += Context->BitHeader->TokenSize;
-    }
-
-    return EFI_NOT_FOUND;
-}
-
-EFI_STATUS
-VbiosFindPmuTable (
-    IN  VBIOS_CONTEXT   *Context
-    )
-{
-    EFI_STATUS      Status;
-    BIT_TOKEN       *FalconToken;
-    FALCON_DATA     *FalconData;
-    UINT32          TableOffset;
-
-    // Find FALCON_DATA token (0x70)
-    Status = VbiosGetBitToken(Context, BIT_TOKEN_FALCON_DATA, &FalconToken);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"FALCON_DATA token not found");
-        return Status;
-    }
-
-    // Get Falcon data structure
-    FalconData = (FALCON_DATA *)(Context->RomData + Context->RomBase + FalconToken->DataOffset);
-    TableOffset = FalconData->UcodeTableOffset;
-
-    FWSEC_DEBUG(L"Falcon data at 0x%X, PMU table offset 0x%X",
-                Context->RomBase + FalconToken->DataOffset, TableOffset);
-
-    // The table offset might be absolute or relative
-    // For Ada Lovelace, it appears to be absolute within the file
-    if (TableOffset < Context->RomSize) {
-        Context->PmuTable = (PMU_LOOKUP_TABLE_HEADER *)(Context->RomData + TableOffset);
-    } else {
-        // Try relative to ROM base
-        TableOffset = Context->RomBase + FalconData->UcodeTableOffset;
-        if (TableOffset >= Context->RomSize) {
-            return EFI_NOT_FOUND;
-        }
-        Context->PmuTable = (PMU_LOOKUP_TABLE_HEADER *)(Context->RomData + TableOffset);
-    }
-
-    // Validate table header
-    if (Context->PmuTable->Version != 1 ||
-        Context->PmuTable->HeaderSize < 4 ||
-        Context->PmuTable->EntrySize < 6 ||
-        Context->PmuTable->EntryCount == 0 ||
-        Context->PmuTable->EntryCount > 32) {
-        FWSEC_LOG(L"Invalid PMU table header: ver=%d, hdr=%d, entry=%d, count=%d",
-                  Context->PmuTable->Version, Context->PmuTable->HeaderSize,
-                  Context->PmuTable->EntrySize, Context->PmuTable->EntryCount);
-        return EFI_INVALID_PARAMETER;
-    }
-
-    Context->PmuEntries = (PMU_LOOKUP_TABLE_ENTRY *)(
-        (UINT8 *)Context->PmuTable + Context->PmuTable->HeaderSize);
-    Context->PmuEntryCount = Context->PmuTable->EntryCount;
-
-    FWSEC_DEBUG(L"PMU table: %d entries", Context->PmuEntryCount);
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS
-VbiosGetPmuEntry (
-    IN  VBIOS_CONTEXT   *Context,
-    IN  UINT8           AppId,
-    OUT PMU_LOOKUP_TABLE_ENTRY **Entry
-    )
-{
-    UINT32  i;
-    UINT8   *EntryPtr;
-
-    if (Context->PmuTable == NULL || Context->PmuEntries == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    EntryPtr = (UINT8 *)Context->PmuEntries;
-
-    for (i = 0; i < Context->PmuEntryCount; i++) {
-        PMU_LOOKUP_TABLE_ENTRY *Ent = (PMU_LOOKUP_TABLE_ENTRY *)EntryPtr;
-        if (Ent->AppId == AppId) {
-            *Entry = Ent;
-            FWSEC_DEBUG(L"Found PMU entry: app=0x%02X, target=0x%02X, data=0x%X",
-                        Ent->AppId, Ent->TargetId, Ent->DataOffset);
-            return EFI_SUCCESS;
-        }
-        EntryPtr += Context->PmuTable->EntrySize;
-    }
-
-    return EFI_NOT_FOUND;
-}
-
-EFI_STATUS
-VbiosExtractFwsec (
-    IN  VBIOS_CONTEXT   *Context
-    )
-{
-    EFI_STATUS                  Status;
-    PMU_LOOKUP_TABLE_ENTRY      *FwsecEntry;
-    UINT32                      DescOffset;
-
-    // Find FWSEC_PROD entry
-    Status = VbiosGetPmuEntry(Context, PMU_APP_ID_FWSEC_PROD, &FwsecEntry);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"FWSEC_PROD not found in PMU table");
-        return Status;
-    }
-
-    // Calculate descriptor offset
-    // The data offset in PMU entry is relative to ROM base
-    DescOffset = Context->RomBase + FwsecEntry->DataOffset;
-    if (DescOffset + sizeof(FALCON_UCODE_DESC_V3) > Context->RomSize) {
-        FWSEC_LOG(L"FWSEC descriptor offset out of bounds: 0x%X", DescOffset);
-        return EFI_INVALID_PARAMETER;
-    }
-
-    Context->FwsecDesc = (FALCON_UCODE_DESC_V3 *)(Context->RomData + DescOffset);
-    Context->FwsecOffset = DescOffset;
-
-    // Validate descriptor
-    if (Context->FwsecDesc->BinHdr.VendorId != 0x10DE) {
-        FWSEC_DEBUG(L"FWSEC descriptor vendor ID: 0x%04X (expected 0x10DE)",
-                    Context->FwsecDesc->BinHdr.VendorId);
-        // Might be encrypted - continue anyway
-    }
-
-    FWSEC_DEBUG(L"FWSEC descriptor at 0x%X", DescOffset);
-    FWSEC_DEBUG(L"  IMEM: base=0x%X, size=0x%X",
-                Context->FwsecDesc->ImemPhysBase, Context->FwsecDesc->ImemLoadSize);
-    FWSEC_DEBUG(L"  DMEM: base=0x%X, size=0x%X",
-                Context->FwsecDesc->DmemPhysBase, Context->FwsecDesc->DmemLoadSize);
-    FWSEC_DEBUG(L"  Signatures: count=%d, versions=0x%04X",
-                Context->FwsecDesc->SignatureCount, Context->FwsecDesc->SignatureVersions);
-
-    return EFI_SUCCESS;
 }
 
 //==============================================================================
-// FWSEC Context Implementation
+// FwsecParseFromVbios
 //==============================================================================
 
 EFI_STATUS
-FwsecInit (
+FwsecParseFromVbios (
     OUT FWSEC_CONTEXT   *Context,
-    IN  VBIOS_CONTEXT   *Vbios
-    )
-{
-    if (Context == NULL || Vbios == NULL) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    ZeroMem(Context, sizeof(FWSEC_CONTEXT));
-    Context->Vbios = Vbios;
-
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS
-FwsecExtract (
-    IN OUT FWSEC_CONTEXT *Context
-    )
-{
-    VBIOS_CONTEXT           *Vbios = Context->Vbios;
-    FALCON_UCODE_DESC_V3    *Desc;
-    UINT32                  DataBase;
-    UINT32                  SigSize;
-
-    if (Vbios->FwsecDesc == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    Desc = Vbios->FwsecDesc;
-    CopyMem(&Context->Desc, Desc, sizeof(FALCON_UCODE_DESC_V3));
-
-    // Calculate data base (after descriptor and signatures)
-    DataBase = Vbios->FwsecOffset + sizeof(FALCON_UCODE_DESC_V3);
-
-    // Extract signatures
-    SigSize = FWSEC_RSA3K_SIG_SIZE;
-    Context->SignatureCount = Desc->SignatureCount;
-    Context->SignatureSize = SigSize;
-
-    if (Context->SignatureCount > 0) {
-        UINT32 TotalSigSize = Context->SignatureCount * SigSize;
-        Context->Signatures = AllocatePool(TotalSigSize);
-        if (Context->Signatures == NULL) {
-            return EFI_OUT_OF_RESOURCES;
-        }
-        CopyMem(Context->Signatures, Vbios->RomData + DataBase, TotalSigSize);
-        DataBase += TotalSigSize;
-        FWSEC_DEBUG(L"Extracted %d signatures (%d bytes each)",
-                    Context->SignatureCount, SigSize);
-    }
-
-    // Extract IMEM
-    Context->ImemSize = Desc->ImemLoadSize;
-    if (Context->ImemSize > 0) {
-        Context->ImemData = AllocatePool(Context->ImemSize);
-        if (Context->ImemData == NULL) {
-            return EFI_OUT_OF_RESOURCES;
-        }
-        CopyMem(Context->ImemData, Vbios->RomData + DataBase, Context->ImemSize);
-        FWSEC_DEBUG(L"Extracted IMEM: %d bytes", Context->ImemSize);
-    }
-
-    // Extract DMEM
-    Context->DmemSize = Desc->DmemLoadSize;
-    if (Context->DmemSize > 0) {
-        Context->DmemData = AllocatePool(Context->DmemSize);
-        if (Context->DmemData == NULL) {
-            return EFI_OUT_OF_RESOURCES;
-        }
-        CopyMem(Context->DmemData,
-                Vbios->RomData + DataBase + Context->ImemSize,
-                Context->DmemSize);
-        FWSEC_DEBUG(L"Extracted DMEM: %d bytes", Context->DmemSize);
-    }
-
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS
-FwsecFindDmemMapper (
-    IN OUT FWSEC_CONTEXT *Context
-    )
-{
-    FALCON_APPIF_HDR_V1         *AppifHdr;
-    FALCON_APPIF_ENTRY          *Entry;
-    FALCON_APPIF_DMEMMAPPER_V3  *Mapper;
-    UINT32                      InterfaceOffset;
-    UINT32                      i;
-
-    if (Context->DmemData == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    // Application interface is at interface_offset within DMEM
-    InterfaceOffset = Context->Desc.InterfaceOffset;
-    if (InterfaceOffset >= Context->DmemSize) {
-        FWSEC_LOG(L"Interface offset 0x%X out of DMEM bounds", InterfaceOffset);
-        return EFI_INVALID_PARAMETER;
-    }
-
-    AppifHdr = (FALCON_APPIF_HDR_V1 *)(Context->DmemData + InterfaceOffset);
-
-    // Validate header
-    if (AppifHdr->Version != 1 || AppifHdr->HeaderSize != 4 ||
-        AppifHdr->EntrySize != 8 || AppifHdr->EntryCount == 0) {
-        FWSEC_LOG(L"Invalid Appif header: ver=%d, hdr=%d, entry=%d, count=%d",
-                  AppifHdr->Version, AppifHdr->HeaderSize,
-                  AppifHdr->EntrySize, AppifHdr->EntryCount);
-        return EFI_INVALID_PARAMETER;
-    }
-
-    // Find DMEMMAPPER entry
-    Entry = (FALCON_APPIF_ENTRY *)(Context->DmemData + InterfaceOffset + AppifHdr->HeaderSize);
-
-    for (i = 0; i < AppifHdr->EntryCount; i++) {
-        if (Entry[i].Id == NVFW_FALCON_APPIF_ID_DMEMMAPPER) {
-            Context->DmemMapperOffset = Entry[i].DmemOffset;
-            Mapper = (FALCON_APPIF_DMEMMAPPER_V3 *)(Context->DmemData + Entry[i].DmemOffset);
-
-            // Validate DMAP signature
-            if (Mapper->Signature != FWSEC_DMEM_MAPPER_SIG) {
-                FWSEC_LOG(L"Invalid DMEM Mapper signature: 0x%08X", Mapper->Signature);
-                return EFI_INVALID_PARAMETER;
-            }
-
-            Context->DmemMapper = Mapper;
-            FWSEC_DEBUG(L"Found DMEM Mapper at offset 0x%X", Entry[i].DmemOffset);
-            FWSEC_DEBUG(L"  CmdIn: offset=0x%X, size=0x%X",
-                        Mapper->CmdInBufferOffset, Mapper->CmdInBufferSize);
-            return EFI_SUCCESS;
-        }
-    }
-
-    FWSEC_LOG(L"DMEMMAPPER entry not found in Appif table");
-    return EFI_NOT_FOUND;
-}
-
-EFI_STATUS
-FwsecPatchFrtsCommand (
-    IN OUT FWSEC_CONTEXT *Context,
-    IN     FB_LAYOUT     *FbLayout
-    )
-{
-    FWSEC_FRTS_CMD  *FrtsCmd;
-    UINT32          CmdOffset;
-
-    if (Context->DmemMapper == NULL || Context->DmemData == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    // Calculate command buffer offset in DMEM
-    CmdOffset = Context->DmemMapperOffset + Context->DmemMapper->CmdInBufferOffset;
-    if (CmdOffset + sizeof(FWSEC_FRTS_CMD) > Context->DmemSize) {
-        FWSEC_LOG(L"FRTS command buffer out of DMEM bounds");
-        return EFI_INVALID_PARAMETER;
-    }
-
-    FrtsCmd = (FWSEC_FRTS_CMD *)(Context->DmemData + CmdOffset);
-
-    // Patch FRTS command
-    ZeroMem(FrtsCmd, sizeof(FWSEC_FRTS_CMD));
-    FrtsCmd->Cmd = FWSEC_CMD_FRTS;
-    FrtsCmd->FrtsRegionOffset = (UINT32)(FbLayout->FbSize - FbLayout->FrtsBase);
-    FrtsCmd->FrtsRegionSize = (UINT32)FbLayout->FrtsSize;
-
-    FWSEC_DEBUG(L"Patched FRTS command: offset=0x%X, size=0x%X",
-                FrtsCmd->FrtsRegionOffset, FrtsCmd->FrtsRegionSize);
-
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS
-FwsecComputeFbLayout (
-    IN  UINT32          Bar0,
-    OUT FB_LAYOUT       *Layout
-    )
-{
-    UINT32  FbSizeMb;
-    UINT64  VgaBase;
-
-    ZeroMem(Layout, sizeof(FB_LAYOUT));
-
-    // Get usable FB size
-    FbSizeMb = ReadReg32(Bar0, NV_USABLE_FB_SIZE_IN_MB) & 0xFFFF;
-    Layout->FbSize = (UINT64)FbSizeMb * SIZE_1MB;
-    Layout->FbUsable = Layout->FbSize;
-
-    FWSEC_DEBUG(L"FB size: %d MB", FbSizeMb);
-
-    // VGA workspace is at end of FB minus 1MB (PRAMIN)
-    VgaBase = Layout->FbSize - SIZE_1MB;
-
-    // Check if display is enabled for VGA workspace
-    // For now, assume no VGA workspace on headless
-    Layout->VgaWorkspaceBase = VgaBase;
-    Layout->VgaWorkspaceSize = 0;  // Disabled
-
-    // FRTS region is before VGA workspace, aligned to 1MB
-    Layout->FrtsSize = FRTS_SIZE;
-    Layout->FrtsBase = (Layout->VgaWorkspaceBase - FRTS_SIZE) & ~(FRTS_ALIGN - 1);
-
-    FWSEC_DEBUG(L"FRTS region: 0x%lX - 0x%lX",
-                Layout->FrtsBase, Layout->FrtsBase + Layout->FrtsSize);
-
-    return EFI_SUCCESS;
-}
-
-VOID
-FwsecFree (
-    IN OUT FWSEC_CONTEXT *Context
-    )
-{
-    if (Context->ImemData != NULL) {
-        FreePool(Context->ImemData);
-    }
-    if (Context->DmemData != NULL) {
-        FreePool(Context->DmemData);
-    }
-    if (Context->Signatures != NULL) {
-        FreePool(Context->Signatures);
-    }
-    if (Context->DmaBuffer != NULL) {
-        FreePool(Context->DmaBuffer);
-    }
-    ZeroMem(Context, sizeof(FWSEC_CONTEXT));
-}
-
-//==============================================================================
-// Main FWSEC Execution Sequence
-//==============================================================================
-
-/**
- * Execute complete FWSEC-FRTS sequence
- * This is the main entry point similar to Linux nova-core
- */
-EFI_STATUS
-ExecuteFwsecFrts (
     IN  UINT32          Bar0,
     IN  UINT8           *VbiosData,
     IN  UINTN           VbiosSize
     )
 {
-    EFI_STATUS      Status;
-    VBIOS_CONTEXT   Vbios;
-    FWSEC_CONTEXT   Fwsec;
-    FB_LAYOUT       FbLayout;
-    FALCON_STATE    GspFalcon;
-    UINT32          RomBase;
-    UINT64          Wpr2Lo, Wpr2Hi;
+    EFI_STATUS  Status;
+    UINT32      BitOffset;
+    UINT32      ExpansionRomOffset = 0;
+    UINT32      ImageOffset;
+    UINT32      SignaturesOffset;
 
-    FWSEC_LOG(L"=== FWSEC-FRTS Execution Starting ===");
+    ZeroMem(Context, sizeof(FWSEC_CONTEXT));
+    Context->Bar0 = Bar0;
+    Context->VbiosData = VbiosData;
+    Context->VbiosSize = VbiosSize;
 
-    //
-    // Step 1: Wait for GFW boot to complete
-    //
-    FWSEC_LOG(L"Step 1: Waiting for GFW boot...");
-    Status = GpuWaitGfwBoot(Bar0, GFW_BOOT_TIMEOUT_US);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"GFW boot timeout");
-        return Status;
-    }
-
-    //
-    // Step 2: Check if WPR2 already configured
-    //
-    FWSEC_LOG(L"Step 2: Checking WPR2 status...");
-    if (GpuIsWpr2Configured(Bar0)) {
-        Status = GpuReadWpr2(Bar0, &Wpr2Lo, &Wpr2Hi);
-        if (!EFI_ERROR(Status)) {
-            FWSEC_LOG(L"WPR2 already configured: 0x%lX - 0x%lX", Wpr2Lo, Wpr2Hi);
-            return EFI_SUCCESS;  // Already done!
+    // Find expansion ROM offset (first 0x55AA signature)
+    for (UINT32 Off = 0; Off < VbiosSize - 2; Off += 0x100) {
+        if (*(UINT16 *)(VbiosData + Off) == 0xAA55) {
+            ExpansionRomOffset = Off;
+            LOG_DBG(L"Expansion ROM at 0x%X", ExpansionRomOffset);
+            break;
         }
     }
+    Context->ExpansionRomOffset = ExpansionRomOffset;
 
-    //
-    // Step 3: Parse VBIOS
-    //
-    FWSEC_LOG(L"Step 3: Parsing VBIOS...");
-    Status = VbiosInit(&Vbios, VbiosData, VbiosSize);
+    // Find BIT header
+    Status = FindBitHeader(VbiosData, VbiosSize, &BitOffset);
     if (EFI_ERROR(Status)) {
+        LOG_ERR(L"BIT header not found in VBIOS");
         return Status;
     }
 
-    Status = VbiosFindRomBase(&Vbios, &RomBase);
+    // Find FWSEC descriptor
+    Status = FindFwsecDescriptor(VbiosData, VbiosSize, BitOffset, ExpansionRomOffset,
+                                  &Context->UcodeDesc, &Context->UcodeDescOffset,
+                                  &Context->UcodeDescSize);
     if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to find ROM base");
+        LOG_ERR(L"FWSEC descriptor not found");
         return Status;
     }
 
-    Status = VbiosFindBitHeader(&Vbios);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to find BIT header");
-        return Status;
+    // Calculate offsets for IMEM, DMEM, and signatures
+    // Layout: [Descriptor][Signatures][IMEM][DMEM]
+    SignaturesOffset = Context->UcodeDescOffset + FALCON_UCODE_DESC_V3_SIZE;
+    Context->SignaturesTotalSize = Context->UcodeDescSize - FALCON_UCODE_DESC_V3_SIZE;
+
+    ImageOffset = Context->UcodeDescOffset + Context->UcodeDescSize;
+    Context->ImemSize = Context->UcodeDesc.IMEMLoadSize;
+    Context->DmemSize = Context->UcodeDesc.DMEMLoadSize;
+
+    LOG_DBG(L"Signatures at 0x%X, total size: %d", SignaturesOffset, Context->SignaturesTotalSize);
+    LOG_DBG(L"Image at 0x%X, IMEM: %d, DMEM: %d", ImageOffset, Context->ImemSize, Context->DmemSize);
+
+    // Validate sizes
+    if (ImageOffset + Context->ImemSize + Context->DmemSize > VbiosSize) {
+        LOG_ERR(L"FWSEC image extends beyond VBIOS");
+        return EFI_INVALID_PARAMETER;
     }
 
-    Status = VbiosFindPmuTable(&Vbios);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to find PMU table");
-        return Status;
+    // Allocate and copy signatures
+    if (Context->SignaturesTotalSize > 0) {
+        Context->Signatures = AllocatePool(Context->SignaturesTotalSize);
+        if (Context->Signatures == NULL) {
+            return EFI_OUT_OF_RESOURCES;
+        }
+        CopyMem(Context->Signatures, VbiosData + SignaturesOffset, Context->SignaturesTotalSize);
     }
 
-    Status = VbiosExtractFwsec(&Vbios);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to extract FWSEC descriptor");
-        return Status;
+    // Allocate and copy IMEM
+    if (Context->ImemSize > 0) {
+        Context->ImemData = AllocatePool(Context->ImemSize);
+        if (Context->ImemData == NULL) {
+            return EFI_OUT_OF_RESOURCES;
+        }
+        CopyMem(Context->ImemData, VbiosData + ImageOffset, Context->ImemSize);
     }
 
-    //
-    // Step 4: Initialize FWSEC context
-    //
-    FWSEC_LOG(L"Step 4: Extracting FWSEC firmware...");
-    Status = FwsecInit(&Fwsec, &Vbios);
-    if (EFI_ERROR(Status)) {
-        return Status;
+    // Allocate and copy DMEM (we'll patch this)
+    if (Context->DmemSize > 0) {
+        Context->DmemData = AllocatePool(Context->DmemSize);
+        if (Context->DmemData == NULL) {
+            return EFI_OUT_OF_RESOURCES;
+        }
+        CopyMem(Context->DmemData, VbiosData + ImageOffset + Context->ImemSize, Context->DmemSize);
     }
 
-    Status = FwsecExtract(&Fwsec);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to extract FWSEC data");
-        FwsecFree(&Fwsec);
-        return Status;
-    }
+    // Read fuse version for signature selection
+    Context->FuseVersion = (UINT8)FwsecReadFuseVersion(Bar0, Context->UcodeDesc.UcodeId);
 
-    //
-    // Step 5: Find DMEM Mapper and patch FRTS command
-    //
-    FWSEC_LOG(L"Step 5: Patching FRTS command...");
-    Status = FwsecFindDmemMapper(&Fwsec);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to find DMEM Mapper");
-        FwsecFree(&Fwsec);
-        return Status;
-    }
-
-    Status = FwsecComputeFbLayout(Bar0, &FbLayout);
-    if (EFI_ERROR(Status)) {
-        FwsecFree(&Fwsec);
-        return Status;
-    }
-
-    Status = FwsecPatchFrtsCommand(&Fwsec, &FbLayout);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Failed to patch FRTS command");
-        FwsecFree(&Fwsec);
-        return Status;
-    }
-
-    //
-    // Step 6: Initialize GSP Falcon
-    //
-    FWSEC_LOG(L"Step 6: Initializing GSP Falcon...");
-    Status = FalconInit(&GspFalcon, Bar0, FALCON_GSP_BASE);
-    if (EFI_ERROR(Status)) {
-        FwsecFree(&Fwsec);
-        return Status;
-    }
-
-    //
-    // Step 7: Reset Falcon
-    //
-    FWSEC_LOG(L"Step 7: Resetting Falcon...");
-    Status = FalconReset(Bar0, &GspFalcon);
-    if (EFI_ERROR(Status)) {
-        FWSEC_LOG(L"Falcon reset failed");
-        FwsecFree(&Fwsec);
-        return Status;
-    }
-
-    //
-    // Step 8: Load FWSEC via DMA
-    //
-    FWSEC_LOG(L"Step 8: Loading FWSEC via DMA...");
-    // TODO: Implement DMA loading with proper signature patching
-    // This requires:
-    // 1. Allocate DMA-capable buffer
-    // 2. Copy IMEM + DMEM + patched signature
-    // 3. Configure FBIF for system memory
-    // 4. Use BROM interface to load and verify
-
-    //
-    // Step 9: Execute FWSEC via BROM
-    //
-    FWSEC_LOG(L"Step 9: Executing FWSEC via BROM...");
-    // TODO: Implement BROM execution
-    // This requires proper BROM register programming
-
-    //
-    // Step 10: Check results
-    //
-    FWSEC_LOG(L"Step 10: Checking results...");
-
-    // Check FRTS error code
-    UINT16 FrtsErr = GpuGetFrtsErrorCode(Bar0);
-    if (FrtsErr != FRTS_ERR_NONE) {
-        FWSEC_LOG(L"FRTS error code: 0x%04X", FrtsErr);
-        FwsecFree(&Fwsec);
-        return EFI_DEVICE_ERROR;
-    }
-
-    // Check WPR2
-    Status = GpuReadWpr2(Bar0, &Wpr2Lo, &Wpr2Hi);
-    if (EFI_ERROR(Status) || Wpr2Hi == 0) {
-        FWSEC_LOG(L"WPR2 not configured after FWSEC execution");
-        FwsecFree(&Fwsec);
-        return EFI_DEVICE_ERROR;
-    }
-
-    FWSEC_LOG(L"=== FWSEC-FRTS Success ===");
-    FWSEC_LOG(L"WPR2: 0x%lX - 0x%lX", Wpr2Lo, Wpr2Hi);
-
-    FwsecFree(&Fwsec);
     return EFI_SUCCESS;
 }
 
 //==============================================================================
-// GPU Helper Functions Implementation
+// FwsecSelectSignature
+// Based on NVIDIA signature selection algorithm (lines 357-378)
 //==============================================================================
 
 EFI_STATUS
-GpuWaitGfwBoot (
-    IN  UINT32          Bar0,
-    IN  UINTN           TimeoutUs
+FwsecSelectSignature (
+    IN OUT FWSEC_CONTEXT *Context
     )
 {
-    UINTN   Elapsed = 0;
-    UINT32  Progress;
+    UINT32  UcodeVersionVal;
+    UINT16  HsSigVersions;
+    UINT32  SigOffset;
 
-    while (Elapsed < TimeoutUs) {
-        Progress = ReadReg32(Bar0, NV_PGC6_AON_SECURE_SCRATCH_GROUP_05_0);
-        if ((Progress & 0xFF) == GFW_BOOT_PROGRESS_COMPLETED) {
-            FWSEC_DEBUG(L"GFW boot completed (progress=0x%X)", Progress);
+    if (Context->Signatures == NULL || Context->SignaturesTotalSize == 0) {
+        LOG_ERR(L"No signatures available");
+        return EFI_NOT_FOUND;
+    }
+
+    // Convert fuse version to bitmask (1 << version)
+    UcodeVersionVal = 1 << Context->FuseVersion;
+    HsSigVersions = Context->UcodeDesc.SignatureVersions;
+
+    LOG_DBG(L"Selecting signature: fuse=%d, ucodeVer=0x%X, sigVersions=0x%04X",
+            Context->FuseVersion, UcodeVersionVal, HsSigVersions);
+
+    // Check if requested version is available
+    if ((UcodeVersionVal & HsSigVersions) == 0) {
+        LOG_ERR(L"Required signature version not available");
+        return EFI_NOT_FOUND;
+    }
+
+    // Calculate offset to correct signature
+    // Walk through the bitmask, counting signatures until we reach ours
+    SigOffset = 0;
+    while ((UcodeVersionVal & HsSigVersions & 1) == 0) {
+        SigOffset += (HsSigVersions & 1) * RSA3K_SIGNATURE_SIZE;
+        HsSigVersions >>= 1;
+        UcodeVersionVal >>= 1;
+    }
+
+    if (SigOffset >= Context->SignaturesTotalSize) {
+        LOG_ERR(L"Signature offset 0x%X exceeds available 0x%X",
+                SigOffset, Context->SignaturesTotalSize);
+        return EFI_INVALID_PARAMETER;
+    }
+
+    Context->SelectedSigOffset = SigOffset;
+    LOG_DBG(L"Selected signature at offset 0x%X", SigOffset);
+
+    return EFI_SUCCESS;
+}
+
+//==============================================================================
+// FwsecPatchSignature
+// Patch RSA signature into DMEM at PKCDataOffset
+//==============================================================================
+
+EFI_STATUS
+FwsecPatchSignature (
+    IN OUT FWSEC_CONTEXT *Context
+    )
+{
+    UINT32  PkcOffset;
+
+    if (Context->DmemData == NULL) {
+        return EFI_NOT_READY;
+    }
+
+    PkcOffset = Context->UcodeDesc.PKCDataOffset;
+
+    // Validate offset
+    if (PkcOffset + RSA3K_SIGNATURE_SIZE > Context->DmemSize) {
+        LOG_ERR(L"PKCDataOffset 0x%X + sig size exceeds DMEM", PkcOffset);
+        return EFI_INVALID_PARAMETER;
+    }
+
+    // Copy selected signature to DMEM
+    CopyMem(Context->DmemData + PkcOffset,
+            Context->Signatures + Context->SelectedSigOffset,
+            RSA3K_SIGNATURE_SIZE);
+
+    LOG(L"Patched RSA-3K signature at DMEM offset 0x%X", PkcOffset);
+    return EFI_SUCCESS;
+}
+
+//==============================================================================
+// FwsecPatchFrtsCmd
+// Patch FRTS command into DMEMMAPPER
+// Based on s_vbiosPatchInterfaceData
+//==============================================================================
+
+EFI_STATUS
+FwsecPatchFrtsCmd (
+    IN OUT FWSEC_CONTEXT *Context,
+    IN     UINT64        FrtsOffset
+    )
+{
+    FALCON_APPIF_HEADER *AppifHdr;
+    FALCON_APPIF_ENTRY  *Entries;
+    FALCON_DMEMMAPPER   *DmemMapper;
+    FWSEC_FRTS_CMD      FrtsCmd;
+    UINT32              InterfaceOffset;
+    UINT32              i;
+
+    if (Context->DmemData == NULL) {
+        return EFI_NOT_READY;
+    }
+
+    Context->FrtsOffset = FrtsOffset;
+    InterfaceOffset = Context->UcodeDesc.InterfaceOffset;
+
+    // Validate interface offset
+    if (InterfaceOffset + sizeof(FALCON_APPIF_HEADER) > Context->DmemSize) {
+        LOG_ERR(L"Interface offset 0x%X out of bounds", InterfaceOffset);
+        return EFI_INVALID_PARAMETER;
+    }
+
+    AppifHdr = (FALCON_APPIF_HEADER *)(Context->DmemData + InterfaceOffset);
+
+    if (AppifHdr->EntryCount < 2) {
+        LOG_ERR(L"Too few interface entries: %d", AppifHdr->EntryCount);
+        return EFI_INVALID_PARAMETER;
+    }
+
+    LOG_DBG(L"Appif header: ver=%d, hdr=%d, entry=%d, count=%d",
+            AppifHdr->Version, AppifHdr->HeaderSize, AppifHdr->EntrySize, AppifHdr->EntryCount);
+
+    // Find DMEMMAPPER entry
+    Entries = (FALCON_APPIF_ENTRY *)(Context->DmemData + InterfaceOffset + sizeof(FALCON_APPIF_HEADER));
+    DmemMapper = NULL;
+
+    for (i = 0; i < AppifHdr->EntryCount; i++) {
+        if (Entries[i].Id == APPIF_ENTRY_ID_DMEMMAPPER) {
+            UINT32 MapperOffset = Entries[i].DmemOffset;
+
+            if (MapperOffset + sizeof(FALCON_DMEMMAPPER) > Context->DmemSize) {
+                LOG_ERR(L"DMEMMAPPER offset out of bounds");
+                return EFI_INVALID_PARAMETER;
+            }
+
+            DmemMapper = (FALCON_DMEMMAPPER *)(Context->DmemData + MapperOffset);
+
+            if (DmemMapper->Signature != DMEMMAPPER_SIGNATURE) {
+                LOG_ERR(L"Invalid DMEMMAPPER signature: 0x%08X", DmemMapper->Signature);
+                return EFI_INVALID_PARAMETER;
+            }
+
+            LOG_DBG(L"Found DMEMMAPPER at 0x%X", MapperOffset);
+            break;
+        }
+    }
+
+    if (DmemMapper == NULL) {
+        LOG_ERR(L"DMEMMAPPER not found");
+        return EFI_NOT_FOUND;
+    }
+
+    // Patch init_cmd to FRTS
+    LOG_DBG(L"Patching InitCmd: 0x%X -> 0x%X", DmemMapper->InitCmd, FWSEC_CMD_FRTS);
+    DmemMapper->InitCmd = FWSEC_CMD_FRTS;
+
+    // Build FRTS command structure (matching NVIDIA exactly)
+    ZeroMem(&FrtsCmd, sizeof(FrtsCmd));
+
+    // readVbiosDesc
+    FrtsCmd.ReadVbiosDesc.Version = 1;
+    FrtsCmd.ReadVbiosDesc.Size = sizeof(FWSEC_READ_VBIOS_DESC);
+    FrtsCmd.ReadVbiosDesc.GfwImageOffset = 0;
+    FrtsCmd.ReadVbiosDesc.GfwImageSize = 0;
+    FrtsCmd.ReadVbiosDesc.Flags = FWSEC_READ_VBIOS_STRUCT_FLAGS;  // = 2
+
+    // frtsRegionDesc
+    FrtsCmd.FrtsRegionDesc.Version = 1;
+    FrtsCmd.FrtsRegionDesc.Size = sizeof(FWSEC_FRTS_REGION_DESC);
+    FrtsCmd.FrtsRegionDesc.FrtsOffset4K = (UINT32)(FrtsOffset >> 12);
+    FrtsCmd.FrtsRegionDesc.FrtsSize4K = FRTS_SIZE_1MB_IN_4K;  // 0x100 = 1MB
+    FrtsCmd.FrtsRegionDesc.MediaType = FRTS_REGION_MEDIA_FB;  // = 2
+
+    // Validate cmd buffer
+    if (DmemMapper->CmdInBufferSize < sizeof(FWSEC_FRTS_CMD)) {
+        LOG_ERR(L"Cmd buffer too small: %d < %d",
+                DmemMapper->CmdInBufferSize, sizeof(FWSEC_FRTS_CMD));
+        return EFI_BUFFER_TOO_SMALL;
+    }
+
+    // Copy command to cmd_in_buffer
+    UINT32 CmdOffset = (UINT32)((UINT8 *)DmemMapper - Context->DmemData) + DmemMapper->CmdInBufferOffset;
+    if (CmdOffset + sizeof(FWSEC_FRTS_CMD) > Context->DmemSize) {
+        // CmdInBufferOffset might be relative to DMEM start, not mapper
+        CmdOffset = DmemMapper->CmdInBufferOffset;
+    }
+
+    CopyMem(Context->DmemData + CmdOffset, &FrtsCmd, sizeof(FrtsCmd));
+
+    LOG(L"Patched FRTS command at 0x%X: offset4K=0x%X, size4K=0x%X",
+        CmdOffset, FrtsCmd.FrtsRegionDesc.FrtsOffset4K, FrtsCmd.FrtsRegionDesc.FrtsSize4K);
+
+    return EFI_SUCCESS;
+}
+
+//==============================================================================
+// FwsecLoadUcode - Load IMEM/DMEM into Falcon
+//==============================================================================
+
+EFI_STATUS
+FwsecLoadUcode (
+    IN  FWSEC_CONTEXT *Context
+    )
+{
+    UINT32  Bar0 = Context->Bar0;
+    UINT32  FalconBase = FWSEC_GSP_BASE;
+    UINT32  i;
+
+    LOG(L"Loading FWSEC ucode: IMEM=%d bytes, DMEM=%d bytes",
+        Context->ImemSize, Context->DmemSize);
+
+    // Reset Falcon
+    GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_CPUCTL, 0);
+
+    // Wait for halt
+    for (i = 0; i < 1000; i++) {
+        UINT32 Cpuctl = GpuRead32(Bar0, FalconBase + FWSEC_FALCON_CPUCTL);
+        if (Cpuctl & FWSEC_CPUCTL_HALTED) {
+            break;
+        }
+        // Small delay
+        for (volatile int j = 0; j < 1000; j++);
+    }
+
+    // Load IMEM (in 256-byte blocks)
+    LOG_DBG(L"Loading IMEM...");
+    for (i = 0; i < Context->ImemSize; i += 4) {
+        if ((i % 256) == 0) {
+            // Set IMEMC for this block
+            UINT32 Block = i / 256;
+            GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_IMEMC(0), (Block << 8) | FWSEC_MEM_AINCW);
+        }
+
+        UINT32 Word = *(UINT32 *)(Context->ImemData + i);
+        GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_IMEMD(0), Word);
+    }
+
+    // Load DMEM (in 256-byte blocks)
+    LOG_DBG(L"Loading DMEM...");
+    for (i = 0; i < Context->DmemSize; i += 4) {
+        if ((i % 256) == 0) {
+            // Set DMEMC for this block
+            UINT32 Block = i / 256;
+            GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_DMEMC(0), (Block << 8) | FWSEC_MEM_AINCW);
+        }
+
+        UINT32 Word = *(UINT32 *)(Context->DmemData + i);
+        GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_DMEMD(0), Word);
+    }
+
+    LOG(L"Ucode loaded successfully");
+    return EFI_SUCCESS;
+}
+
+//==============================================================================
+// FwsecExecute - Start Falcon and wait for completion
+//==============================================================================
+
+EFI_STATUS
+FwsecExecute (
+    IN  FWSEC_CONTEXT *Context
+    )
+{
+    UINT32  Bar0 = Context->Bar0;
+    UINT32  FalconBase = FWSEC_GSP_BASE;
+    UINT32  BootVec;
+    UINTN   Timeout = FWSEC_HALT_TIMEOUT_US;
+
+    // Set boot vector
+    BootVec = Context->UcodeDesc.IMEMVirtBase;
+    GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_BOOTVEC, BootVec);
+    LOG(L"Starting Falcon at boot vector 0x%X", BootVec);
+
+    // Start CPU
+    GpuWrite32(Bar0, FalconBase + FWSEC_FALCON_CPUCTL, FWSEC_CPUCTL_STARTCPU);
+
+    // Wait for completion (halt)
+    while (Timeout > 0) {
+        UINT32 Cpuctl = GpuRead32(Bar0, FalconBase + FWSEC_FALCON_CPUCTL);
+
+        if (Cpuctl & FWSEC_CPUCTL_HALTED) {
+            // Check error scratch
+            UINT32 Scratch0E = GpuRead32(Bar0, NV_PBUS_VBIOS_SCRATCH_0E);
+            UINT16 FrtsErr = (UINT16)((Scratch0E >> 16) & 0xFFFF);
+
+            if (FrtsErr != 0) {
+                LOG_ERR(L"FWSEC execution failed: FRTS error 0x%04X", FrtsErr);
+                return EFI_DEVICE_ERROR;
+            }
+
+            LOG(L"Falcon halted successfully");
             return EFI_SUCCESS;
         }
 
         // Wait 1ms
-        gBS->Stall(1000);
-        Elapsed += 1000;
+        for (volatile int j = 0; j < 100000; j++);
+        Timeout -= 1000;
     }
 
-    FWSEC_LOG(L"GFW boot timeout (progress=0x%X)", Progress);
+    LOG_ERR(L"Falcon execution timeout");
     return EFI_TIMEOUT;
 }
 
-BOOLEAN
-GpuIsWpr2Configured (
-    IN  UINT32          Bar0
-    )
-{
-    UINT32  Wpr2Hi = ReadReg32(Bar0, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
-    return (Wpr2Hi & 0xFFFFFFF0) != 0;
-}
-
-EFI_STATUS
-GpuReadWpr2 (
-    IN  UINT32          Bar0,
-    OUT UINT64          *Wpr2Lo,
-    OUT UINT64          *Wpr2Hi
-    )
-{
-    UINT32  Lo = ReadReg32(Bar0, NV_PFB_PRI_MMU_WPR2_ADDR_LO);
-    UINT32  Hi = ReadReg32(Bar0, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
-
-    *Wpr2Lo = ((UINT64)(Lo & 0xFFFFFFF0)) << 8;  // Shift by 12, but register has bits 31:4
-    *Wpr2Hi = ((UINT64)(Hi & 0xFFFFFFF0)) << 8;
-
-    return EFI_SUCCESS;
-}
-
-UINT16
-GpuGetFrtsErrorCode (
-    IN  UINT32          Bar0
-    )
-{
-    UINT32  Scratch = ReadReg32(Bar0, NV_PBUS_SW_SCRATCH_0E);
-    return (UINT16)((Scratch >> 16) & 0xFFFF);
-}
-
-UINT64
-GpuGetUsableFbSize (
-    IN  UINT32          Bar0
-    )
-{
-    UINT32  SizeMb = ReadReg32(Bar0, NV_USABLE_FB_SIZE_IN_MB) & 0xFFFF;
-    return (UINT64)SizeMb * SIZE_1MB;
-}
-
-UINT8
-GpuGetArchitecture (
-    IN  UINT32          Bar0
-    )
-{
-    UINT32  Boot0 = ReadReg32(Bar0, NV_PMC_BOOT_0);
-    return (UINT8)((Boot0 >> NV_PMC_BOOT_0_ARCH_SHIFT) & 0x1F);
-}
-
 //==============================================================================
-// Falcon Functions Implementation
+// FwsecVerifyWpr2
 //==============================================================================
 
 EFI_STATUS
-FalconInit (
-    OUT FALCON_STATE    *State,
-    IN  UINT32          Bar0,
-    IN  UINT32          FalconBase
+FwsecVerifyWpr2 (
+    IN  FWSEC_CONTEXT *Context
     )
 {
-    UINT32  Hwcfg2;
+    UINT32  Bar0 = Context->Bar0;
+    UINT32  Wpr2Lo, Wpr2Hi;
+    UINT32  ExpectedLo;
 
-    ZeroMem(State, sizeof(FALCON_STATE));
-    State->Base = FalconBase;
-    State->IsGsp = (FalconBase == FALCON_GSP_BASE);
+    Wpr2Lo = GpuRead32(Bar0, FWSEC_WPR2_ADDR_LO);
+    Wpr2Hi = GpuRead32(Bar0, FWSEC_WPR2_ADDR_HI);
 
-    // Check RISC-V capability
-    Hwcfg2 = FalconReadReg(Bar0, FalconBase, FALCON_HWCFG2);
-    State->IsRiscV = (Hwcfg2 & FALCON_HWCFG2_RISCV) != 0;
+    LOG(L"WPR2: LO=0x%08X HI=0x%08X", Wpr2Lo, Wpr2Hi);
 
-    // Check if halted
-    UINT32 Cpuctl = FalconReadReg(Bar0, FalconBase, FALCON_CPUCTL);
-    State->Halted = (Cpuctl & FALCON_CPUCTL_HALTED) != 0;
+    // Check if WPR2 is configured (HI != 0)
+    if ((Wpr2Hi & 0xFFFFFFF0) == 0) {
+        LOG_ERR(L"WPR2 not configured (HI is zero)");
+        return EFI_DEVICE_ERROR;
+    }
 
-    FWSEC_DEBUG(L"Falcon init: base=0x%X, RISC-V=%d, halted=%d",
-                FalconBase, State->IsRiscV, State->Halted);
+    // Verify WPR2 LO matches expected FRTS offset
+    ExpectedLo = (UINT32)(Context->FrtsOffset >> WPR2_ADDR_ALIGNMENT);
+    if ((Wpr2Lo & 0xFFFFFFF0) != (ExpectedLo & 0xFFFFFFF0)) {
+        LOG_ERR(L"WPR2 LO mismatch: got 0x%X, expected 0x%X", Wpr2Lo, ExpectedLo);
+        return EFI_DEVICE_ERROR;
+    }
+
+    LOG(L"WPR2 configured correctly at 0x%llX",
+        ((UINT64)(Wpr2Lo & 0xFFFFFFF0)) << 8);
 
     return EFI_SUCCESS;
 }
 
+//==============================================================================
+// FwsecExecuteFrts - Main entry point
+//==============================================================================
+
 EFI_STATUS
-FalconReset (
-    IN  UINT32          Bar0,
-    IN  FALCON_STATE    *State
+FwsecExecuteFrts (
+    IN  UINT32  Bar0,
+    IN  UINT8   *VbiosData,
+    IN  UINTN   VbiosSize,
+    IN  UINT64  FrtsOffset
     )
 {
-    UINT32  FalconBase = State->Base;
-    UINT32  Hwcfg2;
-    UINTN   Timeout = 100000;  // 100ms
+    EFI_STATUS      Status;
+    FWSEC_CONTEXT   Context;
 
-    // Wait for memory scrub to complete if in progress
-    do {
-        Hwcfg2 = FalconReadReg(Bar0, FalconBase, FALCON_HWCFG2);
-        if ((Hwcfg2 & FALCON_HWCFG2_MEM_SCRUBBING) == 0) {
-            break;
-        }
-        gBS->Stall(100);
-        Timeout -= 100;
-    } while (Timeout > 0);
+    LOG(L"=== FWSEC-FRTS Execution Starting ===");
+    LOG(L"VBIOS: %d bytes, FRTS offset: 0x%llX", VbiosSize, FrtsOffset);
 
-    if (Timeout == 0) {
-        FWSEC_LOG(L"Falcon memory scrub timeout");
+    // Step 1: Parse VBIOS and extract FWSEC
+    LOG(L"Step 1: Parsing VBIOS...");
+    Status = FwsecParseFromVbios(&Context, Bar0, VbiosData, VbiosSize);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"Failed to parse VBIOS: %r", Status);
+        return Status;
     }
 
-    // Select Falcon core (for dual-controller)
-    UINT32 BcrCtrl = FalconReadReg(Bar0, FalconBase, FALCON_BCR_CTRL);
-    if (BcrCtrl != FALCON_BCR_CTRL_CORE_SELECT) {
-        FalconWriteReg(Bar0, FalconBase, FALCON_BCR_CTRL, FALCON_BCR_CTRL_CORE_SELECT);
-
-        // Wait for core select
-        Timeout = 10000;
-        do {
-            BcrCtrl = FalconReadReg(Bar0, FalconBase, FALCON_BCR_CTRL);
-            if (BcrCtrl == FALCON_BCR_CTRL_CORE_SELECT) {
-                break;
-            }
-            gBS->Stall(10);
-            Timeout -= 10;
-        } while (Timeout > 0);
+    // Step 2: Select signature based on fuse version
+    LOG(L"Step 2: Selecting signature (fuse version %d)...", Context.FuseVersion);
+    Status = FwsecSelectSignature(&Context);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"Failed to select signature: %r", Status);
+        goto cleanup;
     }
 
-    State->Halted = TRUE;
-    FWSEC_DEBUG(L"Falcon reset complete");
+    // Step 3: Patch signature into DMEM
+    LOG(L"Step 3: Patching signature...");
+    Status = FwsecPatchSignature(&Context);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"Failed to patch signature: %r", Status);
+        goto cleanup;
+    }
 
-    return EFI_SUCCESS;
+    // Step 4: Patch FRTS command into DMEMMAPPER
+    LOG(L"Step 4: Patching FRTS command...");
+    Status = FwsecPatchFrtsCmd(&Context, FrtsOffset);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"Failed to patch FRTS command: %r", Status);
+        goto cleanup;
+    }
+
+    // Step 5: Load ucode into Falcon
+    LOG(L"Step 5: Loading ucode...");
+    Status = FwsecLoadUcode(&Context);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"Failed to load ucode: %r", Status);
+        goto cleanup;
+    }
+
+    // Step 6: Execute Falcon
+    LOG(L"Step 6: Executing FWSEC...");
+    Status = FwsecExecute(&Context);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"FWSEC execution failed: %r", Status);
+        goto cleanup;
+    }
+
+    // Step 7: Verify WPR2
+    LOG(L"Step 7: Verifying WPR2...");
+    Status = FwsecVerifyWpr2(&Context);
+    if (EFI_ERROR(Status)) {
+        LOG_ERR(L"WPR2 verification failed: %r", Status);
+        goto cleanup;
+    }
+
+    LOG(L"=== FWSEC-FRTS Success! WPR2 Configured ===");
+
+cleanup:
+    FwsecFreeContext(&Context);
+    return Status;
 }
 
-EFI_STATUS
-FalconReadMailbox (
-    IN  UINT32          Bar0,
-    IN  FALCON_STATE    *State,
-    OUT UINT32          *Mbox0,
-    OUT UINT32          *Mbox1
+//==============================================================================
+// FwsecFreeContext
+//==============================================================================
+
+VOID
+FwsecFreeContext (
+    IN OUT FWSEC_CONTEXT *Context
     )
 {
-    *Mbox0 = FalconReadReg(Bar0, State->Base, FALCON_MAILBOX0);
-    *Mbox1 = FalconReadReg(Bar0, State->Base, FALCON_MAILBOX1);
-    State->MailBox0 = *Mbox0;
-    State->MailBox1 = *Mbox1;
-    return EFI_SUCCESS;
+    if (Context->ImemData != NULL) {
+        FreePool(Context->ImemData);
+        Context->ImemData = NULL;
+    }
+    if (Context->DmemData != NULL) {
+        FreePool(Context->DmemData);
+        Context->DmemData = NULL;
+    }
+    if (Context->Signatures != NULL) {
+        FreePool(Context->Signatures);
+        Context->Signatures = NULL;
+    }
 }
