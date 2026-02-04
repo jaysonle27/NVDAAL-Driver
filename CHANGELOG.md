@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-02-03 - FWSEC Execution API & Ada Lovelace Parsing
+
+### Added
+- **BAR0 VBIOS Reading** (NVDAALGsp)
+  - `readVbiosFromBar()` - Read VBIOS directly from GPU BAR0 at offset 0x300000
+  - Automatic ROM image scanning and size detection
+  - NVGI header support for modern VBIOSes
+- **Ada Lovelace PMU Table Path** (Token 0x50)
+  - New BIT Token 0x50 parsing for Ada Lovelace GPUs
+  - Direct PMU table offset extraction (version, entry count)
+  - PMU table header validation (v1, headerSize=6, entrySize=6)
+  - Fallback to Token 0x70 for pre-Ada GPUs
+- **FWSEC Execution API**
+  - `NVDAAL::executeFwsec()` - Execute FWSEC-FRTS from driver
+  - `methodExecuteFwsec()` - IOUserClient selector 8
+  - `Client::executeFwsec()` - libNVDAAL API
+- **nvdaal-cli `fwsec` Command**
+  - New command: `nvdaal-cli fwsec <vbios.rom>`
+  - Loads VBIOS, executes FWSEC-FRTS, verifies WPR2
+  - Step-by-step progress output with diagnostics
+
+### Changed
+- **methodGetStatus()** now uses scalar outputs instead of structure
+  - Returns 9 scalar values (pmcBoot0, wpr2Lo, wpr2Hi, etc.)
+  - Fixes compatibility with IOConnectCallScalarMethod
+- **libNVDAAL getStatus()** updated to match new scalar interface
+- Added `BIT_TOKEN_PMU_TABLE (0x50)` constant to NVDAALRegs.h
+
+### Technical Details
+- Token 0x50 structure: version(1) + entryCount(1) + offsets(4*n)
+- PMU table signature: version=1, headerSize=6, entrySize=6
+- VBIOS ROM offset in BAR0: 0x300000
+
 ## [0.5.0] - 2026-02-02 - VBIOS Parsing & FWSEC Execution
 
 ### Added
@@ -182,6 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IOKit-based kernel extension
 - Compute-only focus (no display support)
 
+[0.6.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/gabrielmaialva33/NVDAAL-Driver/compare/v0.3.0...v0.3.1

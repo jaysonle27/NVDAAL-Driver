@@ -130,7 +130,7 @@ sudo reboot
 
 ## :wrench: Features
 
-### Current (v0.5.0 - VBIOS Parsing & FWSEC Execution)
+### Current (v0.6.0 - FWSEC Execution API & Ada Lovelace Parsing)
 - :white_check_mark: PCI device detection and enumeration
 - :white_check_mark: BAR0/BAR1 memory mapping (MMIO + VRAM)
 - :white_check_mark: Chip identification (Ada Lovelace architecture)
@@ -139,9 +139,11 @@ sudo reboot
   - Radix3 Page Table Builder (per-page physical addressing)
   - WPR2 Metadata Configuration
   - **Complete VBIOS Parsing**:
+    - BAR0 VBIOS reading (direct from GPU at 0x300000)
     - ROM image scanning (0x55AA signatures)
     - PCIR header parsing & FWSEC image detection (type 0xE0)
     - BIT (BIOS Information Table) header scanning
+    - Ada Lovelace Token 0x50 PMU table path (with Token 0x70 fallback)
     - PMU Lookup Table & Falcon Ucode Descriptor extraction
   - **Real FWSEC-FRTS Execution**:
     - Falcon IMEM/DMEM ucode loading
@@ -173,6 +175,8 @@ sudo reboot
   - Detailed error codes from kernel
 - :white_check_mark: **CLI Tool** (nvdaal-cli)
   - `boot` command for full sequence
+  - `fwsec` command for WPR2 configuration
+  - `status` command for GPU register status
   - `load` command for legacy loading
 - :white_check_mark: **Multi-Architecture Build**
   - arm64 (Apple Silicon)
@@ -187,7 +191,7 @@ sudo reboot
 
 ## :star: Pioneer Insights
 
-As of v0.5.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
+As of v0.6.0, **NVDAAL** is one of the first open-source efforts to bring Ada Lovelace compute to macOS. Key architectural decisions made for excellence:
 
 - **Lock-Free GSP RPC**: Using synchronous memory barriers and stack-allocated buffers to minimize kernel latency during GPU resource management.
 - **Hardware-Native GPFIFO**: Fully compliant with the 128-bit entry format required by AD10x chips, enabling direct hardware work submission.
