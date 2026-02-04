@@ -1,48 +1,48 @@
-# Firmware para NVDAAL
+# Firmware for NVDAAL
 
-Este diretório deve conter os arquivos de firmware extraídos da GPU.
+This directory should contain firmware files extracted from the GPU.
 
-## Arquivos Necessários
+## Required Files
 
-| Arquivo | Descrição | Fonte |
-|---------|-----------|-------|
-| `vbios.rom` | VBIOS extraído da GPU | `extract_vbios.py` |
-| `gsp.bin` | Firmware GSP (opcional) | Linux driver |
-| `acr.bin` | ACR firmware (opcional) | Linux driver |
+| File | Description | Source |
+|------|-------------|--------|
+| `vbios.rom` | VBIOS extracted from GPU | `extract_vbios.py` |
+| `gsp.bin` | GSP Firmware (optional) | Linux driver |
+| `acr.bin` | ACR firmware (optional) | Linux driver |
 
-## Como Extrair
+## How to Extract
 
-### VBIOS (Método 1 - Linux direto)
+### VBIOS (Method 1 - Direct Linux)
 
 ```bash
 cd ../Tools
 sudo python3 extract_vbios.py -o ../Firmware/vbios.rom
 ```
 
-### VBIOS (Método 2 - TechPowerUp)
+### VBIOS (Method 2 - TechPowerUp)
 
-1. Acesse https://www.techpowerup.com/vgabios/
-2. Busque por "RTX 4090"
-3. Baixe a versão compatível com sua placa
-4. Salve como `vbios.rom` neste diretório
+1. Go to https://www.techpowerup.com/vgabios/
+2. Search for "RTX 4090"
+3. Download the version compatible with your card
+4. Save as `vbios.rom` in this directory
 
-### GSP Firmware (do driver Linux)
+### GSP Firmware (from Linux driver)
 
 ```bash
-# No Linux com driver NVIDIA instalado
+# On Linux with NVIDIA driver installed
 cp /lib/firmware/nvidia/gsp_ga10x.bin ./gsp.bin
 ```
 
-## Injeção via OpenCore
+## OpenCore Injection
 
-Para injetar o VBIOS via OpenCore:
+To inject VBIOS via OpenCore:
 
-1. Converta para Base64:
+1. Convert to Base64:
 ```bash
 base64 -i vbios.rom -o vbios.txt
 ```
 
-2. Adicione ao config.plist:
+2. Add to config.plist:
 ```xml
 <key>DeviceProperties</key>
 <dict>
@@ -51,13 +51,13 @@ base64 -i vbios.rom -o vbios.txt
         <key>PciRoot(0x0)/Pci(0x1,0x0)/Pci(0x0,0x0)</key>
         <dict>
             <key>rom</key>
-            <data><!-- Cole o conteúdo de vbios.txt aqui --></data>
+            <data><!-- Paste vbios.txt content here --></data>
         </dict>
     </dict>
 </dict>
 ```
 
-## Aviso Legal
+## Legal Notice
 
-O uso de firmware proprietário pode violar os termos de licença da NVIDIA.
-Este projeto é para fins educacionais e de pesquisa.
+Using proprietary firmware may violate NVIDIA's license terms.
+This project is for educational and research purposes only.
