@@ -619,8 +619,8 @@ struct FwsecFrtsRegionDesc {
 
 // Complete FRTS command (patched into cmd_in_buffer)
 struct FwsecFrtsCmd {
-    FwsecReadVbiosDesc readVbios;
-    FwsecFrtsRegionDesc frtsRegion;
+    struct FwsecReadVbiosDesc readVbios;
+    struct FwsecFrtsRegionDesc frtsRegion;
 };
 
 // Legacy FRTS structure (for compatibility)
