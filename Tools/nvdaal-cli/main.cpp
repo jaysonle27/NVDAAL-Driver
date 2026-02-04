@@ -14,6 +14,7 @@ void print_usage(const char *prog) {
     std::cout << "Usage: " << prog << " <command> [args]\n";
     std::cout << "Commands:\n";
     std::cout << "  status                Show GPU status (WPR2, GSP, SEC2 registers)\n";
+    std::cout << "  fwsec <vbios.rom>     Load VBIOS and execute FWSEC-FRTS (configures WPR2)\n";
     std::cout << "  boot <firmware_dir>   Full boot sequence with all firmwares\n";
     std::cout << "  load <firmware.bin>   Load GSP firmware only (legacy)\n";
     std::cout << "  test                  Verify VRAM allocation and Queue kicking\n";
@@ -28,6 +29,52 @@ void print_usage(const char *prog) {
 bool file_exists(const std::string& path) {
     std::ifstream f(path);
     return f.good();
+}
+
+int cmd_fwsec(const std::string& vbiosPath) {
+    nvdaal::Client client;
+
+    if (!client.connect()) {
+        std::cerr << "[-] Error: Could not connect to driver." << std::endl;
+        return 1;
+    }
+
+    std::cout << "[*] NVDAAL FWSEC Execution" << std::endl;
+    std::cout << "[*] VBIOS: " << vbiosPath << std::endl;
+
+    // Step 1: Load VBIOS
+    std::cout << "[1] Loading VBIOS..." << std::endl;
+    if (!client.loadVbios(vbiosPath)) {
+        std::cerr << "[-] Error: Failed to load VBIOS" << std::endl;
+        return 1;
+    }
+    std::cout << "    OK: VBIOS loaded" << std::endl;
+
+    // Step 2: Execute FWSEC
+    std::cout << "[2] Executing FWSEC-FRTS..." << std::endl;
+    if (!client.executeFwsec()) {
+        std::cerr << "[-] Error: FWSEC execution failed" << std::endl;
+        std::cerr << "    Check: log show --predicate 'eventMessage CONTAINS \"NVDAAL\"' --last 1m" << std::endl;
+        return 1;
+    }
+    std::cout << "    OK: FWSEC executed" << std::endl;
+
+    // Step 3: Check WPR2
+    std::cout << "[3] Checking WPR2 status..." << std::endl;
+    nvdaal::GpuStatus status;
+    if (client.getStatus(&status)) {
+        if (status.wpr2Enabled) {
+            std::cout << "[+] SUCCESS: WPR2 is now configured!" << std::endl;
+            std::cout << "    WPR2_LO: 0x" << std::hex << status.wpr2Lo << std::endl;
+            std::cout << "    WPR2_HI: 0x" << status.wpr2Hi << std::dec << std::endl;
+            return 0;
+        } else {
+            std::cerr << "[-] WPR2 still not configured after FWSEC" << std::endl;
+            return 1;
+        }
+    }
+
+    return 1;
 }
 
 int cmd_status() {
@@ -234,6 +281,13 @@ int main(int argc, char *argv[]) {
 
     if (command == "status") {
         return cmd_status();
+    } else if (command == "fwsec") {
+        if (argc < 3) {
+            std::cerr << "Error: Missing VBIOS path" << std::endl;
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_fwsec(argv[2]);
     } else if (command == "boot") {
         if (argc < 3) {
             std::cerr << "Error: Missing firmware directory path" << std::endl;
