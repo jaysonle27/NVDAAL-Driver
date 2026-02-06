@@ -1,0 +1,131 @@
+{
+  "identity": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "vbios_version": "95.02.18.80.87",
+    "uuid": "GPU-4f1ceff0-0dc0-9286-8453-1bb6657cb77a",
+    "pci_device_id": "0x268410DE",
+    "pci_subsys_id": "0x889D1043",
+    "pci_bus_id": "00000000:02:00.0",
+    "architecture": "Ada Lovelace",
+    "chip": "AD102-300-A1"
+  },
+  "memory": {
+    "vram_total_bytes": 25757220864,
+    "vram_total_hex": "0x5FF400000",
+    "vram_total_gb": 23.99,
+    "vram_physical_bytes": 25769803776,
+    "bar1_total_bytes": 268435456,
+    "fw_reserved_mb": 12.0,
+    "frts_offset": "0x5FFF00000",
+    "frts_size": "0x100000",
+    "wpr2_lo_expected": "0x05FFF000",
+    "wpr2_hi_expected": "0x06000000"
+  },
+  "clocks": {
+    "gpu_max_mhz": 3105,
+    "mem_max_mhz": 10501
+  },
+  "thermal": {
+    "power_limit_w": 477.0
+  },
+  "pcie": {
+    "max_gen": 4,
+    "max_width": 16,
+    "current_gen": 4,
+    "current_width": 8
+  },
+  "cuda": {
+    "compute_capability": "8.9",
+    "sm_count": 128,
+    "max_threads_per_block": 1024,
+    "warp_size": 32,
+    "shared_mem_per_block": 49152,
+    "total_memory_hex": "0x5FF380000",
+    "cuda_version": "12.8"
+  },
+  "benchmarks": {
+    "fp32_1024": {
+      "ms": 4.57,
+      "tflops": 0.5
+    },
+    "fp32_2048": {
+      "ms": 0.44,
+      "tflops": 38.8
+    },
+    "fp32_4096": {
+      "ms": 2.75,
+      "tflops": 50.0
+    },
+    "fp32_8192": {
+      "ms": 20.18,
+      "tflops": 54.5
+    },
+    "fp16_8192_tensor_cores": {
+      "ms": 17.32,
+      "tflops": 63.5
+    },
+    "bandwidth_gb_s": 311.0
+  },
+  "vbios": {
+    "size": 2097152,
+    "rom_images": [
+      {
+        "offset": "0x0",
+        "code_type": "0x00",
+        "length": 64512
+      },
+      {
+        "offset": "0xFC00",
+        "code_type": "0x03",
+        "length": 85504
+      }
+    ],
+    "has_fwsec": false,
+    "note": "Ada Lovelace VBIOS does NOT embed FWSEC. Use linux-firmware fwsec-frts-ad10x.bin instead."
+  },
+  "nvdaal_registers": {
+    "NV_PMC_BOOT_0": {
+      "offset": "0x00000000",
+      "expected": "0x192000A1",
+      "note": "Arch 0x19 = Ada"
+    },
+    "GSP_FALCON_BASE": {
+      "offset": "0x00110000"
+    },
+    "GSP_RISCV_BASE": {
+      "offset": "0x00118000",
+      "note": "Ada uses RISC-V, not legacy Falcon"
+    },
+    "SEC2_FALCON_BASE": {
+      "offset": "0x00840000"
+    },
+    "SEC2_RISCV_BASE": {
+      "offset": "0x00841000"
+    },
+    "WPR2_ADDR_LO": {
+      "offset": "0x001FA824"
+    },
+    "WPR2_ADDR_HI": {
+      "offset": "0x001FA828"
+    },
+    "VBIOS_ROM_BASE": {
+      "offset": "0x00300000"
+    },
+    "FUSE_VERSION": {
+      "offset": "0x008241E0",
+      "note": "Determines RSA signature selection"
+    }
+  },
+  "findings": {
+    "critical": [
+      "Ada Lovelace VBIOS does NOT contain FWSEC firmware (no codeType 0xE0 image)",
+      "FWSEC must come from linux-firmware: nvidia/ad102/gsp/fwsec-frts-ad10x.bin",
+      "Method 3B (VBIOS parsing for FWSEC) will NEVER work on Ada",
+      "Current fwsec.bin (FWSC format, 66KB) has invalid RSA signature",
+      "WPR2 region goes at top 1MB of VRAM: 0x5FFF00000 - 0x600000000"
+    ],
+    "pcie_note": "GPU reports PCIe Gen4 x8 (should be x16) - may affect DMA performance in kext"
+  },
+  "timestamp": "2026-02-06 01:29:43",
+  "source": "Live RTX 4090 via WSL2 + pynvml + PyTorch CUDA 12.8"
+}
