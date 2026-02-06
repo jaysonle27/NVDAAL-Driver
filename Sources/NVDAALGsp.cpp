@@ -635,8 +635,17 @@ bool NVDAALGsp::parseVbios(const void *vbios, size_t size) {
     }
     
     if (fwsecStart == 0) {
+        // Ada Lovelace VBIOS does NOT contain FWSEC (confirmed via live RTX 4090)
+        // FWSEC must come from linux-firmware: nvidia/ad102/gsp/fwsec-frts-ad10x.bin
+        uint32_t boot0 = readReg(NV_PMC_BOOT_0);
+        uint32_t arch = (boot0 >> 20) & 0x1F;
+        if (arch >= NV_CHIP_ARCH_ADA) {
+            IOLog("NVDAAL-GSP: Ada+ arch (0x%02x) - VBIOS does NOT contain FWSEC\n", arch);
+            IOLog("NVDAAL-GSP: Use file-based fwsec-frts-ad10x.bin from linux-firmware\n");
+            fwsecInfo.valid = false;
+            return true;  // Not an error, just no FWSEC in VBIOS
+        }
         IOLog("NVDAAL-GSP: No FWSEC image (type 0xE0) in VBIOS - trying PMU Lookup Table\n");
-        // In modern VBIOSs, FWSEC is found via PMU Lookup Table, not as separate image
     } else {
         fwsecImageOffset = fwsecStart;
         fwsecImageSize = fwsecLen;
@@ -1107,14 +1116,16 @@ bool NVDAALGsp::executeFwsecViaBrom(void) {
     // Based on NVIDIA kgspExecuteHsFalcon_GA102
     // Flow: reset → DisableCtxReq → TRANSCFG → DMA load → BROM params → start
 
-    IOLog("NVDAAL-GSP: Executing FWSEC via BROM (GA102 HS DMA path)...\n");
+    IOLog("NVDAAL-GSP: Executing FWSEC via BROM on SEC2 (Ada HS DMA path)...\n");
 
     if (!fwsecMem || !fwsecInfo.valid) {
         IOLog("NVDAAL-GSP: No valid FWSEC firmware loaded\n");
         return false;
     }
 
-    const uint32_t falconBase = NV_PGSP_BASE;
+    // CRITICAL: FWSEC runs on SEC2 Falcon (0x840000), NOT GSP Falcon (0x110000)
+    // Confirmed via RMExecuteFwsecOnSec2 string in nvlddmkm.sys 591.74
+    const uint32_t falconBase = NV_PSEC_BASE;
     const uint8_t *vbiosData = (const uint8_t *)fwsecMem->getBytesNoCopy();
 
     // Prepare DMA buffer with IMEM + DMEM (256-byte aligned)
@@ -1679,13 +1690,16 @@ bool NVDAALGsp::resetSec2(void) {
 
 bool NVDAALGsp::checkWpr2Setup(void) {
     // Check if WPR2 has been set up by FWSEC
-    uint32_t wpr2HiReg = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_HI);
+    // Ada Lovelace: LO=0x1FA824, HI=0x1FA828 (confirmed via nvlddmkm.sys 591.74)
     uint32_t wpr2LoReg = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_LO);
+    uint32_t wpr2HiReg = readReg(NV_PFB_PRI_MMU_WPR2_ADDR_HI);
+
+    IOLog("NVDAAL-GSP: WPR2 raw: LO=0x%08x HI=0x%08x\n", wpr2LoReg, wpr2HiReg);
 
     if (NV_PFB_WPR2_ENABLED(wpr2HiReg)) {
-        // Read actual WPR2 bounds
-        wpr2Hi = ((uint64_t)(wpr2HiReg & 0xFFFFF) << 32) | (wpr2LoReg & 0xFFF00000);
-        wpr2Lo = ((uint64_t)(readReg(NV_PFB_PRI_MMU_WPR2_ADDR_LO_VAL) & 0xFFFFF) << 12);
+        // WPR2 registers contain page-aligned addresses (shifted by 12 bits)
+        wpr2Lo = ((uint64_t)(wpr2LoReg & 0xFFFFF)) << 12;
+        wpr2Hi = ((uint64_t)(wpr2HiReg & 0xFFFFF)) << 12;
 
         IOLog("NVDAAL-GSP: WPR2 active: 0x%llx - 0x%llx\n", wpr2Lo, wpr2Hi);
         return true;
@@ -1958,9 +1972,10 @@ bool NVDAALGsp::executeFwsecFrts(void) {
     }
 
     // === Method 2: PIO + BROM HS (fallback - PIO load, BROM verify) ===
-    IOLog("NVDAAL-GSP: Method 2: PIO + BROM HS mode...\n");
+    IOLog("NVDAAL-GSP: Method 2: PIO + BROM HS on SEC2...\n");
     {
-        const uint32_t falconBase = NV_PGSP_BASE;
+        // FWSEC runs on SEC2 Falcon, not GSP
+        const uint32_t falconBase = NV_PSEC_BASE;
         const void *imem = vbiosData + fwsecInfo.imemOffset;
 
         if (fwsecInfo.imemOffset + fwsecInfo.imemSize > vbiosSize ||
