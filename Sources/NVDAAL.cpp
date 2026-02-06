@@ -132,7 +132,7 @@ IOService *NVDAAL::probe(IOService *provider, SInt32 *score) {
     NVDLOG("probe", "Found %s (0x%04x) - Compute Mode", deviceName, devID);
     deviceId = devID;
 
-    *score = 5000;  // High score to override Apple's stub drivers
+    *score = 25001;  // Must beat IONDRVFramebuffer (20000)
     return this;
 }
 
