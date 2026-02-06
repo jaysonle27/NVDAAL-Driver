@@ -54,11 +54,14 @@ FwsecExecuteFrtsFromFile (
 
 // GPU Register Offsets
 #define NV_PMC_BOOT_0                   0x00000000
-#define NV_PFB_PRI_MMU_WPR2_ADDR_LO     0x001FA820
-#define NV_PFB_PRI_MMU_WPR2_ADDR_HI     0x001FA824
+#define NV_PFB_PRI_MMU_WPR2_ADDR_LO     0x001FA824  // Ada (confirmed via nvlddmkm.sys 591.74)
+#define NV_PFB_PRI_MMU_WPR2_ADDR_HI     0x001FA828  // Ada (confirmed via nvlddmkm.sys 591.74)
 
-// GSP Falcon Base and Registers
+// GSP Falcon Base (for reading state only, NOT for FWSEC execution)
 #define NV_PGSP_BASE                    0x00110000
+
+// SEC2 Falcon Base - FWSEC runs on SEC2, NOT GSP (confirmed via nvlddmkm.sys)
+#define NV_PSEC_BASE                    0x00840000
 #define FALCON_IRQSSET                  0x0000
 #define FALCON_IRQSCLR                  0x0004
 #define FALCON_IRQMSET                  0x0010
@@ -2135,9 +2138,10 @@ NvdaalFwsecMain (
     LogPrint (L"\n*** Using scrubber firmware from file ***\n");
 
     // Try PIO method first (more reliable, bypasses DMA issues)
-    LogPrint (L"NVDAAL: Attempting PIO (direct register) method...\n");
+    // FWSEC runs on SEC2 Falcon (0x840000), NOT GSP (0x110000)
+    LogPrint (L"NVDAAL: Attempting PIO (direct register) on SEC2...\n");
     Status = ExecuteScrubberViaPio (
-      NV_PGSP_BASE,
+      NV_PSEC_BASE,
       mScrubberData,
       mScrubberSize
       );
@@ -2152,9 +2156,9 @@ NvdaalFwsecMain (
     }
 
     // If PIO didn't configure WPR2, try DMA method as fallback
-    LogPrint (L"NVDAAL: PIO did not configure WPR2, trying DMA method...\n");
+    LogPrint (L"NVDAAL: PIO did not configure WPR2, trying DMA on SEC2...\n");
     Status = ExecuteFwsecViaBrom (
-      NV_PGSP_BASE,
+      NV_PSEC_BASE,
       mScrubberData,
       (UINT32)mScrubberSize,
       0  // Boot vector (scrubber starts at 0)
@@ -2215,7 +2219,7 @@ NvdaalFwsecMain (
       LogPrint (L"NVDAAL: Firmware blob at 0x%X (size %u)\n", FwBlobStart, FwBlobSize);
 
       Status = ExecuteFwsecViaBrom (
-        NV_PGSP_BASE,
+        NV_PSEC_BASE,
         VbiosData + FwBlobStart,
         FwBlobSize,
         mFwsecInfo.BootVec
