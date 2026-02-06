@@ -88,6 +88,7 @@ bool NVDAAL::init(OSDictionary *dictionary) {
     channel = nullptr;
     display = nullptr;
     computeReady = false;
+    interruptSource = nullptr;
 
     hClient = 0;
     hDevice = 0;
@@ -103,15 +104,33 @@ bool NVDAAL::init(OSDictionary *dictionary) {
 
 void NVDAAL::free(void) {
     NVDLOG("free", "Driver freed");
-    
+
     if (interruptSource) {
         interruptSource->disable();
-        getWorkLoop()->removeEventSource(interruptSource);
+        if (getWorkLoop()) {
+            getWorkLoop()->removeEventSource(interruptSource);
+        }
         interruptSource->release();
         interruptSource = nullptr;
     }
-    
-    // ...
+
+    if (gsp) {
+        delete gsp;
+        gsp = nullptr;
+    }
+
+    if (memory) {
+        memory->release();
+        memory = nullptr;
+    }
+
+    if (display) {
+        display->release();
+        display = nullptr;
+    }
+
+    unmapBARs();
+    super::free();
 }
 
 IOService *NVDAAL::probe(IOService *provider, SInt32 *score) {
@@ -196,30 +215,27 @@ bool NVDAAL::start(IOService *provider) {
 
     // Initialize GSP (required for Ada Lovelace)
     IOLog("NVDAAL: Initializing GSP for %s...\n", getArchName(chipArch));
-    
+
     gsp = new NVDAALGsp();
     if (!gsp || !gsp->init(pciDevice, mmioBase)) {
-        IOLog("NVDAAL: Failed to create/init GSP controller\n");
+        IOLog("NVDAAL: WARNING: Failed to create/init GSP controller\n");
         if (gsp) { delete gsp; gsp = nullptr; }
-        unmapBARs();
-        return false;
+        // Don't fail start - we still want the driver attached for debugging
+    } else {
+        IOLog("NVDAAL: GSP controller initialized\n");
     }
 
     // Initialize Memory Manager
     memory = NVDAALMemory::withDevice(pciDevice, bar1Map);
     if (!memory) {
-        IOLog("NVDAAL: Failed to initialize Memory Manager\n");
+        IOLog("NVDAAL: WARNING: Memory Manager not available\n");
     }
 
-    // Initialize Fake Display (Metal Spoofing)
-    display = NVDAALDisplay::withDevice(pciDevice);
-    if (display) {
-        if (!display->attach(this) || !display->start(this)) {
-            IOLog("NVDAAL: Failed to start Display Engine\n");
-            display->release();
-            display = nullptr;
-        }
-    }
+    // NVDAALDisplay disabled for now - injecting Metal/NVDA properties
+    // can crash WindowServer or attract IONDRVFramebuffer
+    // TODO: Re-enable when compute-only Metal support is implemented
+    display = nullptr;
+    IOLog("NVDAAL: Display engine disabled (compute-only mode)\n");
 
     // Load and Boot GSP
     // Note: In a real scenario, firmware would be provided via UserClient or loaded from disk.

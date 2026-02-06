@@ -107,8 +107,6 @@ public:
     };
     bool getStatus(GpuStatus *status);
 
-    // IOKit Register Access Overrides (Internal)
-    virtual bool setProperty(const OSSymbol *aKey, OSObject *anObject) override;
 };
 
 #endif // NVDAAL_H
