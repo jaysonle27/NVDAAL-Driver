@@ -57,6 +57,20 @@ private:
     // State
     bool computeReady;
 
+    // Linux-compat mode (from SSDT _DSM Function 5)
+    bool linuxCompatMode;           // "linux-compat" boot mode enabled
+    bool gspWarmBoot;               // Skip full GSP init if WPR2 already set
+    bool skipDisplayInit;           // Skip display engine initialization
+    bool fwsecAlreadyRun;           // FWSEC already executed by UEFI
+    bool preferPioLoad;             // Use PIO (not DMA) for firmware loading
+    uint8_t debugLevel;             // 0=off, 1=basic, 2=verbose, 3=trace
+
+    // SSDT-provided hardware parameters (validated against detected)
+    uint64_t ssdtVramUsable;        // Usable VRAM from SSDT (or 0 if not set)
+    uint32_t ssdtArchId;            // Architecture ID from SSDT
+    uint32_t ssdtGspFalconBase;     // GSP Falcon base register
+    uint32_t ssdtSec2FalconBase;    // SEC2 Falcon base register
+
 private:
     // Hardware initialization
     bool mapBARs(void);
@@ -70,6 +84,10 @@ private:
 
     // Helper
     const char *getArchName(uint32_t arch);
+
+    // ACPI/SSDT property reading (Linux-compat mode)
+    bool readAcpiProperties(void);
+    void logAcpiProperties(void);
 
 public:
     // IOService lifecycle
