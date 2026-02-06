@@ -51,8 +51,8 @@
 // ============================================================================
 
 #define NV_PFB_PRI_MMU_CTRL               0x00100C80
-#define NV_PFB_PRI_MMU_WPR2_ADDR_LO       0x001FA820
-#define NV_PFB_PRI_MMU_WPR2_ADDR_HI       0x001FA824
+#define NV_PFB_PRI_MMU_WPR2_ADDR_LO       0x001FA824  // Ada Lovelace (confirmed via nvlddmkm.sys 591.74)
+#define NV_PFB_PRI_MMU_WPR2_ADDR_HI       0x001FA828  // Ada Lovelace (confirmed via nvlddmkm.sys 591.74)
 
 // WPR2 (Write Protected Region 2) status check
 #define NV_PFB_WPR2_ENABLED(val)          (((val) >> 31) & 1)
@@ -215,7 +215,8 @@
 // FWSEC / WPR2 Registers
 // ============================================================================
 
-#define NV_PFB_PRI_MMU_WPR2_ADDR_LO_VAL   0x001FA828  // WPR2 low address value
+// Note: WPR2_ADDR_LO_VAL removed - was pointing to WPR2_ADDR_HI (0x1FA828)
+// Use NV_PFB_PRI_MMU_WPR2_ADDR_LO and _HI directly
 #define NV_PGC6_BSI_SECURE_SCRATCH_14     0x00118F58  // Boot stage scratch
 
 // Boot stages for GSP
