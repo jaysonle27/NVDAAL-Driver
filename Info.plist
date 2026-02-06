@@ -20,23 +20,130 @@
     <string>0.1.0</string>
     <key>IOKitPersonalities</key>
     <dict>
-        <key>NVDAAL</key>
+        <!-- RTX 4090 (AD102) - Primary target -->
+        <key>NVDAAL-RTX4090</key>
         <dict>
             <key>CFBundleIdentifier</key>
             <string>com.nvdaal.compute</string>
             <key>IOClass</key>
             <string>NVDAAL</string>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <!-- PCI matching: Device ID 0x2684 + Vendor ID 0x10DE -->
             <key>IOPCIPrimaryMatch</key>
-            <string>0x268410DE</string>
-            <!-- RTX 4090 (AD102) -->
+            <string>0x268410DE 0x268510DE</string>
+            <!-- Also match by name for broader compatibility -->
+            <key>IONameMatch</key>
+            <array>
+                <string>display</string>
+                <string>pci10de,2684</string>
+                <string>pci10de,2685</string>
+            </array>
+            <!-- High probe score to beat IONDRVFramebuffer (20000) -->
+            <key>IOProbeScore</key>
+            <integer>25000</integer>
+            <!-- Thunderbolt/eGPU support -->
             <key>IOPCITunnelCompatible</key>
             <true/>
             <key>IOPCIPrimaryMatchIfParentIsPCIBridge</key>
             <true/>
-            <key>IOProbeScore</key>
-            <integer>25000</integer>
+        </dict>
+        <!-- RTX 4080/4080 SUPER -->
+        <key>NVDAAL-RTX4080</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.nvdaal.compute</string>
+            <key>IOClass</key>
+            <string>NVDAAL</string>
             <key>IOProviderClass</key>
             <string>IOPCIDevice</string>
+            <key>IOPCIPrimaryMatch</key>
+            <string>0x270210DE 0x270410DE</string>
+            <key>IONameMatch</key>
+            <array>
+                <string>display</string>
+                <string>pci10de,2702</string>
+                <string>pci10de,2704</string>
+            </array>
+            <key>IOProbeScore</key>
+            <integer>25000</integer>
+            <key>IOPCITunnelCompatible</key>
+            <true/>
+            <key>IOPCIPrimaryMatchIfParentIsPCIBridge</key>
+            <true/>
+        </dict>
+        <!-- RTX 4070 Ti/Ti SUPER -->
+        <key>NVDAAL-RTX4070Ti</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.nvdaal.compute</string>
+            <key>IOClass</key>
+            <string>NVDAAL</string>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <key>IOPCIPrimaryMatch</key>
+            <string>0x270510DE 0x278210DE</string>
+            <key>IONameMatch</key>
+            <array>
+                <string>display</string>
+                <string>pci10de,2705</string>
+                <string>pci10de,2782</string>
+            </array>
+            <key>IOProbeScore</key>
+            <integer>25000</integer>
+            <key>IOPCITunnelCompatible</key>
+            <true/>
+            <key>IOPCIPrimaryMatchIfParentIsPCIBridge</key>
+            <true/>
+        </dict>
+        <!-- RTX 4070/4070 SUPER -->
+        <key>NVDAAL-RTX4070</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.nvdaal.compute</string>
+            <key>IOClass</key>
+            <string>NVDAAL</string>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <key>IOPCIPrimaryMatch</key>
+            <string>0x278610DE 0x286010DE</string>
+            <key>IONameMatch</key>
+            <array>
+                <string>display</string>
+                <string>pci10de,2786</string>
+                <string>pci10de,2860</string>
+            </array>
+            <key>IOProbeScore</key>
+            <integer>25000</integer>
+            <key>IOPCITunnelCompatible</key>
+            <true/>
+            <key>IOPCIPrimaryMatchIfParentIsPCIBridge</key>
+            <true/>
+        </dict>
+        <!-- RTX 4060 Ti/4060 -->
+        <key>NVDAAL-RTX4060</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.nvdaal.compute</string>
+            <key>IOClass</key>
+            <string>NVDAAL</string>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <key>IOPCIPrimaryMatch</key>
+            <string>0x286410DE 0x287010DE 0x287110DE</string>
+            <key>IONameMatch</key>
+            <array>
+                <string>display</string>
+                <string>pci10de,2864</string>
+                <string>pci10de,2870</string>
+                <string>pci10de,2871</string>
+            </array>
+            <key>IOProbeScore</key>
+            <integer>25000</integer>
+            <key>IOPCITunnelCompatible</key>
+            <true/>
+            <key>IOPCIPrimaryMatchIfParentIsPCIBridge</key>
+            <true/>
         </dict>
     </dict>
     <key>NSHumanReadableCopyright</key>
@@ -52,6 +159,7 @@
         <key>com.apple.iokit.IOPCIFamily</key>
         <string>2.9</string>
     </dict>
+    <!-- Load at boot time to match before IONDRVFramebuffer -->
     <key>OSBundleRequired</key>
     <string>Root</string>
 </dict>
