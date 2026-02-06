@@ -93,6 +93,20 @@ bool NVDAAL::init(OSDictionary *dictionary) {
     hClient = 0;
     hDevice = 0;
 
+    // Linux-compat mode defaults (from SSDT _DSM Function 5)
+    linuxCompatMode = false;
+    gspWarmBoot = false;
+    skipDisplayInit = true;  // Always skip for compute-only
+    fwsecAlreadyRun = false;
+    preferPioLoad = true;    // PIO is safer than DMA initially
+    debugLevel = 0;
+
+    // SSDT-provided hardware parameters
+    ssdtVramUsable = 0;
+    ssdtArchId = 0;
+    ssdtGspFalconBase = 0;
+    ssdtSec2FalconBase = 0;
+
     // Log configuration in debug mode
     if (NVDAAL_DEBUG_ENABLED) {
         nvdaalConfigLog();
@@ -203,6 +217,13 @@ bool NVDAAL::start(IOService *provider) {
         NVDERR("start", "Failed to identify chip");
         unmapBARs();
         return false;
+    }
+
+    // Read ACPI/SSDT properties (Linux-compat mode)
+    if (readAcpiProperties()) {
+        logAcpiProperties();
+    } else {
+        IOLog("NVDAAL: No ACPI properties found (using defaults)\n");
     }
 
     // Setup Interrupts (MSI)
