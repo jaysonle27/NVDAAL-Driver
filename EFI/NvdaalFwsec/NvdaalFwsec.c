@@ -89,7 +89,10 @@ FwsecExecuteFrtsFromFile (
 
 // Falcon Memory Control Bits
 #define FALCON_IMEMC_AINCW              (1 << 24)  // Auto-increment on write
+#define FALCON_IMEMC_SECURE             (1 << 28)  // Secure mode (BROM hashes IMEM)
 #define FALCON_DMEMC_AINCW              (1 << 24)  // Auto-increment on write
+#define FALCON_IMEM_BLKSIZE2            8           // 2^8 = 256 bytes per IMEM block
+#define FALCON_IMEM_WORDS_PER_BLOCK     64          // 256 bytes / 4 bytes per word
 #define FALCON_MEM_WRITE_ENABLE         (1 << 23)  // Write enable bit (CRITICAL: bit 23, NOT 24)
 
 // PMC (Power Management Controller) Registers
@@ -1521,7 +1524,9 @@ FreeDmaBuffer (
 }
 
 // Load firmware to Falcon IMEM using PIO (direct register writes)
-// This is an alternative to DMA that doesn't require external memory access
+// Based on NVIDIA's s_imemCopyTo_TU102 in kernel_gsp_falcon_tu102.c
+// CRITICAL: Must set SECURE bit (28) and write IMEMT tags per 256B block
+// for BROM to validate the firmware in Heavy-Secure mode.
 STATIC
 EFI_STATUS
 LoadImemViaPio (
@@ -1534,27 +1539,40 @@ LoadImemViaPio (
   UINT32  NumWords = (SizeBytes + 3) / 4;
   UINT32  i;
   UINT32  ImemcVal;
+  UINT32  Tag;
 
-  LogPrint (L"NVDAAL: PIO loading %u bytes to IMEM @ 0x%X\n", SizeBytes, DstOffset);
+  LogPrint (L"NVDAAL: PIO loading %u bytes (%u words) to IMEM @ 0x%X (SECURE+TAGS)\n",
+            SizeBytes, NumWords, DstOffset);
 
-  // Set up IMEMC for auto-increment writes
-  // Format: [31:24]=port, [23]=secure, [22]=auto-inc, [7:2]=offset/4
-  ImemcVal = FALCON_IMEMC_AINCW | (DstOffset >> 2);
-
+  // Set up IMEMC: auto-increment + SECURE bit for HS mode
+  // NVIDIA: reg32 = FLD_SET_DRF_NUM(_PFALCON_FALCON, _IMEMC, _AINCW, 0x1, reg32);
+  //         reg32 = FLD_SET_DRF_NUM(_PFALCON_FALCON, _IMEMC, _SECURE, bSecure, reg32);
+  ImemcVal = FALCON_IMEMC_AINCW | FALCON_IMEMC_SECURE | (DstOffset >> 2);
   WriteReg (FalconBase + FALCON_IMEMC(0), ImemcVal);
 
   // Verify IMEMC was written
   {
     UINT32 Readback = ReadReg (FalconBase + FALCON_IMEMC(0));
-    LogPrint (L"NVDAAL: IMEMC[0] = 0x%08X (wrote 0x%08X)\n", Readback, ImemcVal);
+    LogPrint (L"NVDAAL: IMEMC[0] = 0x%08X (wrote 0x%08X, SECURE=%u)\n",
+              Readback, ImemcVal, (ImemcVal >> 28) & 1);
   }
 
-  // Write data words
+  // Write IMEM data with tags per 256-byte block (64 words)
+  // NVIDIA: tag = tag >> 8; (tag starts at DstOffset >> 8 = block index)
+  //         if ((wordIdx & ((1u << (FALCON_IMEM_BLKSIZE2 - 2)) - 1)) == 0)
+  //             kflcnRegWrite(IMEMT(0), tag++);
+  Tag = DstOffset >> FALCON_IMEM_BLKSIZE2;  // Starting block tag
+
   for (i = 0; i < NumWords; i++) {
+    // Write IMEM tag at the start of each 256-byte block (every 64 words)
+    if ((i % FALCON_IMEM_WORDS_PER_BLOCK) == 0) {
+      WriteReg (FalconBase + FALCON_IMEMT(0), Tag);
+      Tag++;
+    }
     WriteReg (FalconBase + FALCON_IMEMD(0), Data[i]);
   }
 
-  LogPrint (L"NVDAAL: PIO wrote %u words to IMEM\n", NumWords);
+  LogPrint (L"NVDAAL: PIO wrote %u words to IMEM with %u tags\n", NumWords, Tag);
   return EFI_SUCCESS;
 }
 
