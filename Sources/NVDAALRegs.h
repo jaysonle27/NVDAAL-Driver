@@ -187,7 +187,9 @@
 #define NV_PRISCV_CPUCTL_START            (1 << 1)
 
 // ============================================================================
-// SEC2 (Security Engine 2) - Runs Booter in Heavy-Secure mode
+// SEC2 (Security Engine 2) - Runs Booter + Scrubber in Heavy-Secure mode
+// NOTE: FWSEC does NOT run on SEC2. FWSEC runs on GSP Falcon (NV_PGSP_BASE).
+// SEC2 handles: booter_load, booter_unload, scrubber
 // ============================================================================
 
 #define NV_PSEC_BASE                      0x00840000
@@ -213,17 +215,19 @@
 
 // ============================================================================
 // FWSEC / WPR2 Registers
+// FWSEC runs on GSP Falcon (NV_PGSP_BASE = 0x110000) in Heavy-Secure mode
+// FWSEC firmware is extracted from VBIOS ROM at runtime (BIT Token 0x70, AppID 0x85)
 // ============================================================================
-
-// Note: WPR2_ADDR_LO_VAL removed - was pointing to WPR2_ADDR_HI (0x1FA828)
-// Use NV_PFB_PRI_MMU_WPR2_ADDR_LO and _HI directly
 #define NV_PGC6_BSI_SECURE_SCRATCH_14     0x00118F58  // Boot stage scratch
 
 // Boot stages for GSP
 #define BOOT_STAGE_3_HANDOFF              0x3
 
-// FWSEC error register
-#define NV_PBUS_VBIOS_SCRATCH_FWSEC_ERR   (NV_PBUS_VBIOS_SCRATCH + (0x15 * 4))
+// FWSEC status registers (from NV_PBUS_VBIOS_SCRATCH base 0x001400)
+// FRTS status: scratch[0x0E] upper 16 bits = error code (0 = success)
+#define NV_PBUS_VBIOS_SCRATCH_FRTS_ERR    (NV_PBUS_VBIOS_SCRATCH + (0x0E * 4))  // 0x001438
+// SB status: scratch[0x15] lower 16 bits = error code (0 = success)
+#define NV_PBUS_VBIOS_SCRATCH_FWSEC_ERR   (NV_PBUS_VBIOS_SCRATCH + (0x15 * 4))  // 0x001454
 
 // ============================================================================
 // Compute Engine (CE)
@@ -424,15 +428,15 @@ typedef struct {
 // BIT (BIOS Information Table) constants
 #define BIT_HEADER_ID                 0xB8FF
 #define BIT_HEADER_SIGNATURE          0x00544942  // "BIT\0" little-endian
-#define BIT_TOKEN_PMU_TABLE           0x50  // Ada Lovelace: direct PMU table offsets
-#define BIT_TOKEN_FALCON_DATA         0x70  // Pre-Ada: Falcon ucode table (NOT PMU in Ada!)
+#define BIT_TOKEN_PMU_TABLE           0x50  // PMU table offsets (alternative path)
+#define BIT_TOKEN_FALCON_DATA         0x70  // Falcon ucode table (contains FWSEC AppID 0x85 on all archs)
 #define BIT_TOKEN_CLOCK_PTRS          0x43  // 'C'
 #define BIT_TOKEN_NOP                 0x00
 
-// FWSEC application IDs (from PMU Lookup Table)
-#define FWSEC_APP_ID_FWSEC            0x85  // Main FWSEC app
-#define FWSEC_APP_ID_FRTS             0x01  // Firmware Runtime Services
-#define FWSEC_APP_ID_SB               0x02  // Secure Boot
+// FWSEC application IDs (from Falcon Ucode Table in VBIOS)
+// FWSEC is a single ucode with AppID 0x85, commands select FRTS vs SB mode
+#define FWSEC_APP_ID_FWSEC            0x85  // FWSEC production (both FRTS and SB modes)
+#define FWSEC_APP_ID_FWSEC_DBG        0x45  // FWSEC debug
 
 // DMEMMAPPER commands
 #define DMEMMAPPER_CMD_FRTS           0x15  // Execute FRTS

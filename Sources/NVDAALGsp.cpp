@@ -635,17 +635,11 @@ bool NVDAALGsp::parseVbios(const void *vbios, size_t size) {
     }
     
     if (fwsecStart == 0) {
-        // Ada Lovelace VBIOS does NOT contain FWSEC (confirmed via live RTX 4090)
-        // FWSEC must come from linux-firmware: nvidia/ad102/gsp/fwsec-frts-ad10x.bin
-        uint32_t boot0 = readReg(NV_PMC_BOOT_0);
-        uint32_t arch = (boot0 >> 20) & 0x1F;
-        if (arch >= NV_CHIP_ARCH_ADA) {
-            IOLog("NVDAAL-GSP: Ada+ arch (0x%02x) - VBIOS does NOT contain FWSEC\n", arch);
-            IOLog("NVDAAL-GSP: Use file-based fwsec-frts-ad10x.bin from linux-firmware\n");
-            fwsecInfo.valid = false;
-            return true;  // Not an error, just no FWSEC in VBIOS
-        }
-        IOLog("NVDAAL-GSP: No FWSEC image (type 0xE0) in VBIOS - trying PMU Lookup Table\n");
+        // On Ada Lovelace, FWSEC is NOT a PCI ROM image (codeType 0xE0).
+        // Instead, FWSEC is embedded in VBIOS and found via BIT Falcon Ucode Table:
+        // BIT header → Token 0x70 → Falcon Ucode Table → AppID 0x85
+        // Confirmed via nouveau fwsec.c and open-gpu-kernel-modules kernel_gsp_fwsec.c
+        IOLog("NVDAAL-GSP: No FWSEC PCI ROM image (0xE0) - will use BIT table (Token 0x70, AppID 0x85)\n");
     } else {
         fwsecImageOffset = fwsecStart;
         fwsecImageSize = fwsecLen;
@@ -688,9 +682,9 @@ bool NVDAALGsp::parseVbios(const void *vbios, size_t size) {
     
     const BitHeader *bit = (const BitHeader *)(data + bitOffset);
 
-    // Step 3: Scan BIT tokens - Ada Lovelace uses Token 0x50, older uses Token 0x70
-    // IMPORTANT: Token 0x70 (FALCON_DATA) points to GSP microcode in Ada, NOT PMU table!
-    // Token 0x50 contains direct offsets to PMU table candidates.
+    // Step 3: Scan BIT tokens for Falcon Ucode Table
+    // Token 0x70 (FALCON_DATA) → Falcon Ucode Table containing FWSEC (AppID 0x85)
+    // Token 0x50 (PMU_TABLE) → Alternative PMU table offsets (Ada may use either/both)
     uint32_t tokenOffset = bitOffset + bit->headerSize;
     uint32_t pmuTokenOffset = 0;
     uint32_t falconDataOffset = 0;
@@ -1116,16 +1110,18 @@ bool NVDAALGsp::executeFwsecViaBrom(void) {
     // Based on NVIDIA kgspExecuteHsFalcon_GA102
     // Flow: reset → DisableCtxReq → TRANSCFG → DMA load → BROM params → start
 
-    IOLog("NVDAAL-GSP: Executing FWSEC via BROM on SEC2 (Ada HS DMA path)...\n");
+    IOLog("NVDAAL-GSP: Executing FWSEC via BROM on GSP Falcon (Ada HS DMA path)...\n");
 
     if (!fwsecMem || !fwsecInfo.valid) {
         IOLog("NVDAAL-GSP: No valid FWSEC firmware loaded\n");
         return false;
     }
 
-    // CRITICAL: FWSEC runs on SEC2 Falcon (0x840000), NOT GSP Falcon (0x110000)
-    // Confirmed via RMExecuteFwsecOnSec2 string in nvlddmkm.sys 591.74
-    const uint32_t falconBase = NV_PSEC_BASE;
+    // CRITICAL: FWSEC runs on GSP Falcon (0x110000) in Heavy-Secure mode
+    // Confirmed via nouveau fwsec.c, open-gpu-kernel-modules kernel_gsp_fwsec.c,
+    // and nova-core docs (docs.kernel.org/gpu/nova/core/fwsec.html)
+    // NOTE: Booter load/unload runs on SEC2 (0x840000), but FWSEC is on GSP
+    const uint32_t falconBase = NV_PGSP_BASE;
     const uint8_t *vbiosData = (const uint8_t *)fwsecMem->getBytesNoCopy();
 
     // Prepare DMA buffer with IMEM + DMEM (256-byte aligned)
@@ -1306,6 +1302,14 @@ bool NVDAALGsp::executeFwsecViaBrom(void) {
     if (!halted) {
         IOLog("NVDAAL-GSP: FWSEC HS execution timeout\n");
         return false;
+    }
+
+    // Check FRTS status register (0x001438 = NV_PBUS_VBIOS_SCRATCH + 0x0E*4)
+    uint32_t frtsStatus = readReg(NV_PBUS_VBIOS_SCRATCH_FRTS_ERR);
+    uint32_t frtsErr = (frtsStatus >> 16) & 0xFFFF;
+    IOLog("NVDAAL-GSP: FRTS status reg: 0x%08x (error=%u)\n", frtsStatus, frtsErr);
+    if (frtsErr != 0) {
+        IOLog("NVDAAL-GSP: FWSEC-FRTS reported error: %u\n", frtsErr);
     }
 
     // Check WPR2
@@ -1972,10 +1976,10 @@ bool NVDAALGsp::executeFwsecFrts(void) {
     }
 
     // === Method 2: PIO + BROM HS (fallback - PIO load, BROM verify) ===
-    IOLog("NVDAAL-GSP: Method 2: PIO + BROM HS on SEC2...\n");
+    IOLog("NVDAAL-GSP: Method 2: PIO + BROM HS on GSP Falcon...\n");
     {
-        // FWSEC runs on SEC2 Falcon, not GSP
-        const uint32_t falconBase = NV_PSEC_BASE;
+        // FWSEC runs on GSP Falcon in HS mode (booter runs on SEC2)
+        const uint32_t falconBase = NV_PGSP_BASE;
         const void *imem = vbiosData + fwsecInfo.imemOffset;
 
         if (fwsecInfo.imemOffset + fwsecInfo.imemSize > vbiosSize ||
