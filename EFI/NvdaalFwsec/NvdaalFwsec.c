@@ -2082,9 +2082,9 @@ NvdaalFwsecMain (
 
   LogPrint (L"\n");
   LogPrint (L"============================================\n");
-  LogPrint (L"  NVDAAL FWSEC Executor v0.7\n");
+  LogPrint (L"  NVDAAL FWSEC Executor v0.8\n");
   LogPrint (L"  For NVIDIA Ada Lovelace GPUs\n");
-  LogPrint (L"  + NVIDIA-based FWSEC implementation\n");
+  LogPrint (L"  + FWSEC from extracted file (NVGI)\n");
   LogPrint (L"  + Proper fuse version & signature\n");
   LogPrint (L"  + BROM Interface (DMA-based HS mode)\n");
   LogPrint (L"  + File Logging to EFI partition\n");
@@ -2323,7 +2323,8 @@ method3_done:
     LogPrint (L"  All methods attempted:\n");
     LogPrint (L"  1. Power Cycle - FAILED\n");
     LogPrint (L"  2. BROM Interface - FAILED\n");
-    LogPrint (L"  3. Professional FWSEC - FAILED\n");
+    LogPrint (L"  3A. FWSEC from file - FAILED\n");
+    LogPrint (L"  3B. FWSEC from VBIOS - FAILED\n");
     LogPrint (L"\n");
     LogPrint (L"  The GPU's Boot ROM requires NVIDIA's\n");
     LogPrint (L"  cryptographic signature to execute\n");

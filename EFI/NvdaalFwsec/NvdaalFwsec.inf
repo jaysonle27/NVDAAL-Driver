@@ -14,7 +14,7 @@
   BASE_NAME                      = NvdaalFwsec
   FILE_GUID                      = 2B3E4567-8901-4DEF-ABCD-EF0123456789
   MODULE_TYPE                    = UEFI_DRIVER
-  VERSION_STRING                 = 0.7
+  VERSION_STRING                 = 0.8
   ENTRY_POINT                    = NvdaalFwsecMain
 
 [Sources]
